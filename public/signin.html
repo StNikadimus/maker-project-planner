@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign in &ndash; Maker Project Planner</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <main class="page page--centered">
+    <div class="card">
+      <h1>Sign in</h1>
+      <form id="signin-form">
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" autocomplete="email" required />
+
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required />
+
+        <p id="error" class="error-text" role="alert"></p>
+
+        <button type="submit" class="btn">Sign in</button>
+      </form>
+      <p>Don't have an account? <a href="signup.html">Sign up</a></p>
+    </div>
+  </main>
+  <script type="module" src="js/signin.js"></script>
+</body>
+</html>
