@@ -6,9 +6,52 @@ for native iOS and Android apps. Backend is Firebase (Auth, Firestore, Cloud
 Functions, Hosting, App Check).
 
 This file is read automatically at the start of every Claude Code session in
-this repo. It contains the Product Brief, Data Model, and Security Principles
-that govern every phase of the build. Do not re-derive or contradict these —
-update this file itself if a decision changes.
+this repo. It contains the Product Brief, Data Model, Security Principles,
+current build status, and the operating notes needed to pick up exactly
+where any previous session left off — treat it as the source of truth, not
+just background reading. Do not re-derive or contradict it — update this
+file itself if a decision changes.
+
+## Working with the user
+
+- The user (Nik / StNikadimus) prefers to communicate in **Slovenian**.
+  Reply in Slovenian by default in this repo. All code, comments, commit
+  messages, and file content stay in **English** regardless — only the
+  conversational replies are Slovenian.
+- The user is building this by directing Claude Code through each phase
+  conversationally, not by writing code themselves — explain what you did
+  and why in plain terms, and proactively flag tradeoffs (like the Blaze
+  billing decision below) rather than silently picking one.
+- The user explicitly likes the current minimal visual style (see
+  `public/css/style.css`: blue `#2d6cdf` primary / red `#c0362c` danger,
+  pill-shaped `.btn` buttons, plain list rows with a bottom border instead
+  of boxed per-item cards, the `.spinner`/`.loading-state` components).
+  Extend this existing CSS vocabulary for new UI rather than introducing a
+  new visual language.
+- The user won't add a billing method to the Firebase project even where
+  the free tier would almost certainly mean $0/month (see the Blaze note
+  under Security Principles) — this is a considered preference, not
+  something to re-litigate casually. If a future feature (e.g. Phase 7)
+  hits the same wall, surface the choice again briefly rather than
+  assuming, but expect the same answer and have a non-Cloud-Functions
+  fallback in mind if one is feasible.
+- After every deploy, tell the user to hard-refresh (Ctrl+Shift+R) or use
+  a private window before testing. Firebase Hosting caches JS/CSS, and a
+  stale cached script has more than once looked exactly like a real bug
+  (confusing "it doesn't work" reports that were actually just the old
+  file). Rule out caching first.
+- Before asking the user to manually test something you could
+  smoke-test yourself first: create disposable throwaway Firebase Auth
+  accounts via the Identity Toolkit REST API
+  (`identitytoolkit.googleapis.com/v1/accounts:signUp`, using the public,
+  non-secret `apiKey` from `firebaseConfig.js`), replicate the *exact*
+  sequence of client calls (including reads that only exist for UI
+  branching, not just the security-critical writes — a shortcut here has
+  hidden real bugs twice already), then delete the test docs and accounts
+  (`accounts:delete`) afterward. For `serverTimestamp()`-bearing writes,
+  replicate via the Firestore REST `:commit` API with `updateTransforms` /
+  `setToServerValue: REQUEST_TIME` — a plain hardcoded timestamp will not
+  equal `request.time` in rules and gives a false-negative denial.
 
 ## Product Brief
 
@@ -109,6 +152,17 @@ a `redeemInvite` Cloud Function. See Security Principles below for why, and
 - Validate and sanitize all input server-side (Security Rules and/or Cloud
   Functions) — client-side validation is UX only, never the security
   boundary.
+- **Firestore rules gotcha worth remembering**: a nested `match` block
+  (e.g. `match /projects/{projectId} { match /members/{uid} { allow read:
+  ... } } }`) governs `get()` on a fully-known path fine, but is **not**
+  considered at all for `list`/collection-group query operations (the
+  dashboard's "Shared with you" `collectionGroup(db, "members")` query hit
+  this — see `firestore.rules`). Collection-group `list` support needs its
+  own top-level rule using the `{path=**}` recursive wildcard, and that
+  rule's condition must reference a `resource.data` field that correlates
+  with the query's own `where()` filter (not a path wildcard) — path
+  wildcards aren't resolved yet when Firestore checks whether a `list` is
+  safe, and using one throws a `Null value error`.
 
 ## Project structure
 
@@ -145,22 +199,57 @@ No build step is required (plain HTML/CSS/JS). To preview `public/` locally:
 npx serve public
 ```
 
-or open `public/index.html` directly in a browser. Once a real Firebase
-project exists and `.firebaserc` points at it, you can also use:
+or open `public/index.html` directly in a browser. You can also use:
 
 ```
 npx firebase-tools emulators:start
 ```
 
+The `firestore-tests/` rules suite needs a JDK on `PATH` (the Firestore
+emulator runs on the JVM) — see `SECURITY.md` for the exact run command.
+
+Building/running the Android app (`android/`) needs Android
+Studio/SDK/platform-tools and, for the emulator specifically, hardware
+acceleration (KVM on Linux, verify with
+`$ANDROID_HOME/emulator/emulator -accel-check`; if this is itself a VM,
+the host hypervisor must support nested virtualization or the emulator
+will refuse to run x86_64 images at all). iOS (`ios/`) needs Xcode on a
+real Mac — not available yet, so it's untested; the platform files are
+generated and ready whenever a Mac is available (`npx cap sync ios` after
+any `public/` change, then open in Xcode).
+
 ## Deploying
 
-Requires a real Firebase project. Fill in `public/js/firebaseConfig.js` and
-`.firebaserc` with the real project's values, then:
+The real Firebase project (`maker-project-planner`) already exists and
+`public/js/firebaseConfig.js` / `.firebaserc` already point at it — nothing
+to fill in.
 
-```
-npx firebase-tools login
-npx firebase-tools deploy
-```
+`firebase login` does **not** work from Claude Code's Bash tool (no
+interactive browser/TTY) — it fails outright, and even piping it through
+`!<command>` into the user's own terminal hits the same problem. The
+working non-interactive path:
+
+1. Ask the user to run `npx firebase-tools login:ci` themselves in their
+   own real terminal (not through the agent) — it opens a browser, then
+   prints a CI token. (On Windows this needed `npx.cmd` specifically,
+   since plain `npx` as a `.ps1` script can be blocked by PowerShell's
+   execution policy — shouldn't apply on Linux/macOS.)
+2. The user pastes that token into the chat.
+3. Run deploys with it set inline for that one command only — never write
+   it to a file or commit it:
+   ```
+   FIREBASE_TOKEN="<pasted token>" npx firebase-tools deploy --only hosting,firestore --token "$FIREBASE_TOKEN"
+   ```
+   (`--only` can be `hosting`, `firestore` (rules+indexes), `firestore:rules`,
+   or `functions` as needed — functions deploy will fail until the project
+   is on Blaze, see the invite-redemption note above.)
+
+`login:ci` is deprecated but functional; firebase-tools itself suggests a
+service account + `GOOGLE_APPLICATION_CREDENTIALS` as the modern
+replacement — worth switching to if deploys become frequent enough that
+regenerating a CI token each session gets old (a service account key is a
+real secret though: never commit it, keep it out of the repo entirely,
+`.gitignore` already covers `*serviceAccountKey*.json`).
 
 ## Git workflow
 
@@ -186,10 +275,39 @@ npx firebase-tools deploy
 
 ## Build phases
 
-The app is built in 8 phases (0 through 7): setup, auth, projects CRUD,
-steps CRUD, security hardening pass with an emulator rules test suite,
-collaboration via invites (Cloud Functions only), Capacitor wrap for
-iOS/Android, and finally AI step-time estimation via a Cloud Function
-calling the Claude API. Work through phases in order; each has explicit
-manual "done when" acceptance checks (including cross-account access
-checks) that must be verified by hand, not just by a successful build.
+The app is built in 8 phases (0 through 7). Work through phases in order;
+each has explicit manual "done when" acceptance checks (including
+cross-account access checks) that must be verified by hand, not just by a
+successful build. Status as of 2026-08-05:
+
+- **Phase 0 — Setup**: done. Firebase Hosting/Firestore/Functions
+  scaffolded, deployed.
+- **Phase 1 — Auth**: done. Email/password sign-up/in/out, protected
+  dashboard, confirmed working by the user.
+- **Phase 2 — Projects CRUD**: done. Create/list/open/delete, cross-account
+  isolation confirmed.
+- **Phase 3 — Steps CRUD**: done. Add/check/delete/reorder steps inside a
+  project, confirmed working.
+- **Phase 4 — Security hardening**: done. Emulator rules test suite (grew
+  to 31 tests through later phases), App Check (reCAPTCHA v3) wired in but
+  **not yet enforced** in the console (deliberate — flip it on once token
+  delivery is confirmed via the App Check metrics page).
+- **Phase 5 — Collaboration via invites**: done, confirmed working. Built
+  **without Cloud Functions** (see Security Principles above for why) —
+  invites/membership enforced entirely by `firestore.rules`. Hit and fixed
+  two real bugs post-"done": a `members/{uid}` read rule that blocked a
+  first-time joiner's own pre-check, and the collection-group `list` rule
+  gotcha noted above.
+- **Phase 6 — Capacitor wrap**: done for Android (built, installed, and
+  manually verified — sign-up, dashboard, project/step CRUD, native
+  `window.confirm()` dialogs — inside a real Android emulator against the
+  live Firebase project). iOS platform files generated but **never built
+  or tested** — no Mac available yet.
+- **Currently**: a UI polish pass on top of the finished phases (e.g. a
+  proper loading-spinner component replacing plain "Loading…" text) before
+  starting Phase 7. Take direction from the user on what else to polish.
+- **Phase 7 — AI step-time estimation**: not started. Needs a Cloud
+  Function to call the Claude API without exposing the key client-side —
+  will hit the same Blaze-plan wall as Phase 5 did. Raise that tradeoff
+  again when this phase starts rather than assuming the answer has
+  changed.
