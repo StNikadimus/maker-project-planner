@@ -10,3 +10,4 @@ ui-debug.log
 *serviceAccountKey*.json
 dist/
 build/
+.claude/
