@@ -153,6 +153,18 @@ service cloud.firestore {
       }
     }
 
+    // Collection-group query support: the dashboard's "Shared with you"
+    // list queries collectionGroup(db, "members") across every project.
+    // Firestore's `list` rule resolution for collection-group queries does
+    // NOT consider the nested match block above (that one only governs
+    // get/create/etc. on a fully-known path) — it needs its own rule using
+    // the {path=**} recursive wildcard. Scoped to `list` only (not `get`,
+    // which the nested rule already covers) and to your own uid only, so
+    // this can never be used to browse anyone else's membership.
+    match /{path=**}/members/{uid} {
+      allow list: if request.auth != null && resource.data.uid == request.auth.uid;
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }

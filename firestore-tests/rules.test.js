@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { initializeTestEnvironment, assertSucceeds, assertFails } from "@firebase/rules-unit-testing";
-import { doc, getDoc, setDoc, updateDoc, deleteDoc, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collectionGroup, query, where, serverTimestamp } from "firebase/firestore";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -346,6 +346,16 @@ describe("projects/{projectId}/invites/{token}", () => {
     await seedInvite("project1", "tok1", { redeemedBy: OTHER_UID, redeemedAt: new Date() });
     await assertFails(deleteDoc(doc(otherDb(), "projects", "project1", "invites", "tok1")));
     await assertSucceeds(deleteDoc(doc(ownerDb(), "projects", "project1", "invites", "tok1")));
+  });
+});
+
+describe("dashboard 'shared with you' collectionGroup query", () => {
+  it("a member can find their own membership via a collectionGroup query on members", async () => {
+    await seedProject();
+    await seedMember();
+    const q = query(collectionGroup(memberDb(), "members"), where("uid", "==", MEMBER_UID));
+    const snap = await assertSucceeds(getDocs(q));
+    if (snap.size !== 1) throw new Error(`expected 1 result, got ${snap.size}`);
   });
 });
 
