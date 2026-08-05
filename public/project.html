@@ -16,6 +16,19 @@
         <p id="project-meta" class="muted"></p>
         <button id="delete-project" class="btn btn--danger">Delete project</button>
       </div>
+
+      <section class="card card--wide">
+        <h2>Steps</h2>
+        <form id="step-form" class="step-form">
+          <input id="step-title" type="text" placeholder="Step title" required />
+          <textarea id="step-notes" placeholder="Notes (optional)" rows="2"></textarea>
+          <input id="step-materials" type="text" placeholder="Materials, comma separated (optional)" />
+          <input id="step-tools" type="text" placeholder="Tools, comma separated (optional)" />
+          <button type="submit" class="btn">Add step</button>
+        </form>
+        <p id="steps-error" class="error-text" role="alert"></p>
+        <ul id="steps-list" class="steps-list"></ul>
+      </section>
     </div>
     <p id="error" class="error-text" role="alert"></p>
   </main>

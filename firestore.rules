@@ -5,6 +5,12 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // Owner-only for now (Phase 5 extends this to collaboratorIds too).
+    function isProjectOwner(projectId) {
+      return request.auth != null
+        && request.auth.uid == get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId;
+    }
+
     // A user may only read or write their own profile document.
     match /users/{userId} {
       allow read: if request.auth != null && request.auth.uid == userId;
@@ -51,6 +57,33 @@ service cloud.firestore {
         && request.resource.data.updatedAt == request.time;
 
       allow delete: if request.auth != null && request.auth.uid == resource.data.ownerId;
+
+      // Same owner-only check as the parent project, via a get() lookup.
+      // Phase 5 extends isProjectOwner() itself to also allow collaborators.
+      match /steps/{stepId} {
+        allow read: if isProjectOwner(projectId);
+
+        allow create: if isProjectOwner(projectId)
+          && request.resource.data.keys().hasOnly(
+               ['title', 'notes', 'materials', 'tools', 'done', 'order', 'createdBy', 'createdAt', 'updatedAt'])
+          && request.resource.data.title is string
+          && request.resource.data.title.size() > 0
+          && request.resource.data.notes is string
+          && request.resource.data.materials is list
+          && request.resource.data.tools is list
+          && request.resource.data.done == false
+          && request.resource.data.order is number
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.updatedAt == request.time;
+
+        allow update: if isProjectOwner(projectId)
+          && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.updatedAt == request.time;
+
+        allow delete: if isProjectOwner(projectId);
+      }
     }
 
     match /{document=**} {
