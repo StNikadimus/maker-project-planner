@@ -1,6 +1,7 @@
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
 import {
   collection,
+  collectionGroup,
   query,
   where,
   onSnapshot,
@@ -20,12 +21,15 @@ const projectForm = document.getElementById("project-form");
 const projectNameInput = document.getElementById("project-name");
 const projectsListEl = document.getElementById("projects-list");
 const projectsErrorEl = document.getElementById("projects-error");
+const sharedProjectsListEl = document.getElementById("shared-projects-list");
 
-let unsubscribeProjects = null;
+let unsubscribeOwned = null;
+let unsubscribeShared = null;
 
 onAuthStateChanged(auth, async (user) => {
   if (!user) {
-    if (unsubscribeProjects) unsubscribeProjects();
+    if (unsubscribeOwned) unsubscribeOwned();
+    if (unsubscribeShared) unsubscribeShared();
     window.location.href = "signin.html";
     return;
   }
@@ -33,13 +37,26 @@ onAuthStateChanged(auth, async (user) => {
   const userSnap = await getDoc(doc(db, "users", user.uid));
   nameEl.textContent = userSnap.exists() ? userSnap.data().displayName : user.email;
 
-  const projectsQuery = query(collection(db, "projects"), where("ownerId", "==", user.uid));
-  unsubscribeProjects = onSnapshot(
-    projectsQuery,
-    (snapshot) => renderProjects(snapshot.docs),
+  const ownedQuery = query(collection(db, "projects"), where("ownerId", "==", user.uid));
+  unsubscribeOwned = onSnapshot(
+    ownedQuery,
+    (snapshot) => renderProjectList(projectsListEl, snapshot.docs, { showDelete: true }),
     (err) => {
       console.error(err);
       projectsErrorEl.textContent = "Couldn't load projects.";
+    }
+  );
+
+  const sharedQuery = query(collectionGroup(db, "members"), where("uid", "==", user.uid));
+  unsubscribeShared = onSnapshot(
+    sharedQuery,
+    async (snapshot) => {
+      const projectDocs = await Promise.all(snapshot.docs.map((memberDoc) => getDoc(memberDoc.ref.parent.parent)));
+      renderProjectList(sharedProjectsListEl, projectDocs.filter((d) => d.exists()), { showDelete: false });
+    },
+    (err) => {
+      console.error(err);
+      projectsErrorEl.textContent = "Couldn't load shared projects.";
     }
   );
 
@@ -47,17 +64,17 @@ onAuthStateChanged(auth, async (user) => {
   dashboardEl.hidden = false;
 });
 
-function renderProjects(docs) {
+function renderProjectList(listEl, docs, { showDelete }) {
   const sorted = [...docs].sort((a, b) => {
     const aTime = a.data().createdAt?.toMillis?.() ?? Date.now();
     const bTime = b.data().createdAt?.toMillis?.() ?? Date.now();
     return bTime - aTime;
   });
 
-  projectsListEl.innerHTML = "";
+  listEl.innerHTML = "";
 
   if (sorted.length === 0) {
-    projectsListEl.innerHTML = '<li class="empty">No projects yet &mdash; add one above.</li>';
+    listEl.innerHTML = `<li class="empty">${showDelete ? "No projects yet &mdash; add one above." : "No projects have been shared with you yet."}</li>`;
     return;
   }
 
@@ -71,14 +88,16 @@ function renderProjects(docs) {
     link.textContent = project.name;
     li.appendChild(link);
 
-    const deleteBtn = document.createElement("button");
-    deleteBtn.type = "button";
-    deleteBtn.className = "btn btn--danger btn--small";
-    deleteBtn.textContent = "Delete";
-    deleteBtn.addEventListener("click", () => deleteProject(docSnap.id, project.name));
-    li.appendChild(deleteBtn);
+    if (showDelete) {
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "btn btn--danger btn--small";
+      deleteBtn.textContent = "Delete";
+      deleteBtn.addEventListener("click", () => deleteProject(docSnap.id, project.name));
+      li.appendChild(deleteBtn);
+    }
 
-    projectsListEl.appendChild(li);
+    listEl.appendChild(li);
   }
 }
 
@@ -104,7 +123,6 @@ projectForm.addEventListener("submit", async (event) => {
       name,
       category: "diy",
       ownerId: auth.currentUser.uid,
-      collaboratorIds: [],
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });

@@ -42,7 +42,6 @@ projects/{projectId}
   name: string
   category: "diy"
   ownerId: uid
-  collaboratorIds: array<uid>      // empty until Phase 5
   createdAt, updatedAt: timestamp
 
 projects/{projectId}/steps/{stepId}
@@ -55,14 +54,22 @@ projects/{projectId}/steps/{stepId}
   createdBy: uid
   createdAt, updatedAt: timestamp
 
-invites/{inviteId}                  // only ever touched via Cloud Functions
-  projectId: string
-  token: string                     // long random string
+projects/{projectId}/invites/{token}   // doc ID *is* the random token
   createdBy: uid
   expiresAt: timestamp
   redeemedBy: uid | null
   redeemedAt: timestamp | null
+
+projects/{projectId}/members/{uid}     // doc ID = the collaborator's own uid
+  uid: uid
+  token: string             // the (now-spent) invite token used to join
+  joinedAt: timestamp
 ```
+
+Note: this deviates from the original plan, which had a single top-level
+`invites/{inviteId}` collection with a `projectId` field, redeemed only via
+a `redeemInvite` Cloud Function. See Security Principles below for why, and
+`SECURITY.md` for exactly how access control is enforced instead.
 
 ## Security Principles (non-negotiable — apply from Phase 1 onward)
 
@@ -72,10 +79,26 @@ invites/{inviteId}                  // only ever touched via Cloud Functions
   and don't treat it as sensitive.
 - Firestore Security Rules default-deny everything. Every collection gets an
   explicit, narrow allow rule.
-- Invite redemption happens only through a Cloud Function using the Admin
-  SDK — never a direct client-side write to `collaboratorIds`. This is the
-  only way to safely validate token/expiry and prevent replay or
-  self-invited access.
+- **Deliberate exception, decided 2026-08-05:** invite creation/redemption
+  is implemented via Security Rules only, with no Cloud Function, because
+  Cloud Functions require the Firebase project to be on the Blaze
+  (pay-as-you-go) plan, and the user chose to stay on the free Spark plan
+  rather than add a billing method. The originally-planned design (a
+  top-level `invites/{inviteId}` collection, redeemed only via a
+  `redeemInvite` Cloud Function using the Admin SDK) would have been
+  strictly more secure and is still written and ready to deploy in
+  `functions/index.js` — it's just not currently active. The rules-only
+  replacement (see Data Model above) uses the invite document's ID as the
+  unguessable secret (`allow get` but never `allow list`, so invites can't
+  be enumerated) and Firestore's per-document write serialization to make
+  redemption single-use (`allow update` only if `redeemedBy` is still
+  `null`). It is well-tested (`firestore-tests/`) but has one known,
+  accepted gap: it isn't a single atomic operation the way a transactional
+  Cloud Function would be, so if a client crashes between claiming the
+  invite and being granted membership, that one invite is burned and the
+  owner needs to issue a new one. If the project ever moves to Blaze
+  (Phase 7 will require it anyway, for the Claude API key), prefer
+  switching back to the Cloud Function version.
 - Real secrets — the Firebase Admin service account, and later the
   Claude/LLM API key — live only in Cloud Functions config/secret manager.
   Never in client code, never committed to git.

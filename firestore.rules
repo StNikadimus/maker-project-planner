@@ -2,13 +2,25 @@ rules_version = '2';
 
 // Default-deny skeleton. Every collection needs an explicit, narrow allow
 // rule added in the phase that introduces it — nothing is implicitly open.
+//
+// Collaboration (projects/{id}/invites, projects/{id}/members below) is
+// enforced entirely by these rules, with no Cloud Function — see CLAUDE.md
+// > Security Principles for why, and the tradeoff this implies.
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Owner-only for now (Phase 5 extends this to collaboratorIds too).
     function isProjectOwner(projectId) {
       return request.auth != null
         && request.auth.uid == get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId;
+    }
+
+    // Owner OR a redeemed member of the project. Collaborators can read and
+    // add/check steps, but delete-worthy operations use isProjectOwner()
+    // instead — only the owner can delete the project or its steps.
+    function isProjectMember(projectId) {
+      return request.auth != null
+        && (isProjectOwner(projectId)
+            || exists(/databases/$(database)/documents/projects/$(projectId)/members/$(request.auth.uid)));
     }
 
     // A user may only read or write their own profile document.
@@ -33,37 +45,37 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Owner-only for now. Phase 5 extends read (and later write) to also
-    // allow request.auth.uid in resource.data.collaboratorIds; delete
-    // stays owner-only. Steps subcollection rule is added in Phase 3.
     match /projects/{projectId} {
+      // Only the owner creates a project.
       allow create: if request.auth != null
         && request.auth.uid == request.resource.data.ownerId
-        && request.resource.data.keys().hasOnly(
-             ['name', 'category', 'ownerId', 'collaboratorIds', 'createdAt', 'updatedAt'])
+        && request.resource.data.keys().hasOnly(['name', 'category', 'ownerId', 'createdAt', 'updatedAt'])
         && request.resource.data.name is string
         && request.resource.data.name.size() > 0
         && request.resource.data.category == 'diy'
-        && request.resource.data.collaboratorIds == []
         && request.resource.data.createdAt == request.time
         && request.resource.data.updatedAt == request.time;
 
-      allow read: if request.auth != null && request.auth.uid == resource.data.ownerId;
+      // Owner and members (redeemed collaborators) can both read the
+      // project and touch its own mutable fields...
+      allow read: if request.auth != null
+        && (request.auth.uid == resource.data.ownerId
+            || exists(/databases/$(database)/documents/projects/$(projectId)/members/$(request.auth.uid)));
 
       allow update: if request.auth != null
-        && request.auth.uid == resource.data.ownerId
+        && (request.auth.uid == resource.data.ownerId
+            || exists(/databases/$(database)/documents/projects/$(projectId)/members/$(request.auth.uid)))
         && request.resource.data.ownerId == resource.data.ownerId
-        && request.resource.data.collaboratorIds == resource.data.collaboratorIds
+        && request.resource.data.category == resource.data.category
         && request.resource.data.updatedAt == request.time;
 
+      // ...but only the owner can delete it.
       allow delete: if request.auth != null && request.auth.uid == resource.data.ownerId;
 
-      // Same owner-only check as the parent project, via a get() lookup.
-      // Phase 5 extends isProjectOwner() itself to also allow collaborators.
       match /steps/{stepId} {
-        allow read: if isProjectOwner(projectId);
+        allow read: if isProjectMember(projectId);
 
-        allow create: if isProjectOwner(projectId)
+        allow create: if isProjectMember(projectId)
           && request.resource.data.keys().hasOnly(
                ['title', 'notes', 'materials', 'tools', 'done', 'order', 'createdBy', 'createdAt', 'updatedAt'])
           && request.resource.data.title is string
@@ -77,12 +89,63 @@ service cloud.firestore {
           && request.resource.data.createdAt == request.time
           && request.resource.data.updatedAt == request.time;
 
-        allow update: if isProjectOwner(projectId)
+        allow update: if isProjectMember(projectId)
           && request.resource.data.createdBy == resource.data.createdBy
           && request.resource.data.createdAt == resource.data.createdAt
           && request.resource.data.updatedAt == request.time;
 
+        // Only the project owner can delete a step.
         allow delete: if isProjectOwner(projectId);
+      }
+
+      // A single-use, expiring "ticket". The document ID *is* the random
+      // token — that's the whole access-control mechanism: you can only
+      // fetch/update one of these if you already know its exact ID, and
+      // `allow read: if false` below means no one (not even the owner) can
+      // list or browse this subcollection to discover tokens. Redemption is
+      // just: flip redeemedBy from null to your own uid. Firestore
+      // serializes concurrent writes to the same document, so only the
+      // first person to attempt this update can ever succeed — that's what
+      // makes it single-use without a server.
+      match /invites/{token} {
+        allow create: if request.auth != null
+          && request.auth.uid == get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId
+          && request.resource.data.keys().hasOnly(['createdBy', 'expiresAt', 'redeemedBy', 'redeemedAt'])
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.expiresAt > request.time
+          && request.resource.data.expiresAt < request.time + duration.value(7, 'd')
+          && request.resource.data.redeemedBy == null
+          && request.resource.data.redeemedAt == null;
+
+        allow read: if false;
+
+        allow update: if request.auth != null
+          && resource.data.redeemedBy == null
+          && resource.data.expiresAt > request.time
+          && request.resource.data.redeemedBy == request.auth.uid
+          && request.resource.data.redeemedAt == request.time
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['redeemedBy', 'redeemedAt']);
+
+        // Lets the owner clean up spent/expired invites; harmless since
+        // it's their own project's data either way.
+        allow delete: if isProjectOwner(projectId);
+      }
+
+      // Created only after successfully redeeming a matching invite above
+      // (see the get() check below) — this is what actually grants
+      // collaborator access via isProjectMember(). Permanent for MVP: no
+      // "remove collaborator" feature yet, so no update/delete.
+      match /members/{uid} {
+        allow read: if isProjectMember(projectId);
+
+        allow create: if request.auth != null
+          && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['uid', 'token', 'joinedAt'])
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.joinedAt == request.time
+          && get(/databases/$(database)/documents/projects/$(projectId)/invites/$(request.resource.data.token)).data.redeemedBy == request.auth.uid;
+
+        allow update, delete: if false;
       }
     }
 

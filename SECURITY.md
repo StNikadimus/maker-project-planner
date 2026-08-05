@@ -10,19 +10,62 @@ this project follows.
 - **`users/{userId}`** — a signed-in user can only read or write their own
   profile document. No one can read or write anyone else's profile.
 - **`projects/{projectId}`** — a signed-in user can only create a project
-  they own (`ownerId` must be their own uid), and can only read, update, or
-  delete a project they own. (Phase 5 will extend *read*, and later some
-  writes, to collaborators added via invite — ownership stays required for
-  delete.)
-- **`projects/{projectId}/steps/{stepId}`** — the same ownership check as
-  the parent project applies to its steps: only the project's owner can
-  read, add, update, or delete steps in it.
+  they own (`ownerId` must be their own uid). Read and update are allowed
+  for the owner **and** anyone with a `members/{uid}` document under that
+  project (see below) — delete is owner-only, always.
+- **`projects/{projectId}/steps/{stepId}`** — the same owner-or-member
+  check as the parent project applies to its steps: owner and members can
+  read/add/check off steps, but only the owner can delete a step.
+- **`projects/{projectId}/invites/{token}`** — this is how sharing works
+  without a Cloud Function (see "Invite mechanism" below for the full
+  explanation). Only the project owner can create one. No one — not even
+  the owner — can ever directly *read* an invite (`allow read: if false`),
+  which is what stops anyone from browsing/enumerating them. The only
+  write operations allowed are a narrow *update* that flips it from
+  unredeemed-and-unexpired to redeemed-by-the-caller — once — and *delete*,
+  owner-only, for cleaning up spent/expired invites.
+- **`projects/{projectId}/members/{uid}`** — this is what actually grants
+  collaborator access. A user can only create the membership document with
+  their *own* uid as the ID, and only by proving, server-side, that they
+  already hold a matching redeemed invite for this exact project.
 - Everything not explicitly listed above is denied by default — the rules
   file (`firestore.rules`) starts from deny-all and only opens the narrow
   cases above.
-- **`invites/{inviteId}`** (added in Phase 5) will be closed to all direct
-  client access — reachable only through Cloud Functions using the Admin
-  SDK, which bypasses these rules safely.
+
+## Invite mechanism (no Cloud Function)
+
+The original plan for Phase 5 was a top-level `invites/{inviteId}`
+collection redeemed only through a `redeemInvite` Cloud Function using the
+Admin SDK — the safest possible design, since a trusted server can
+atomically validate-and-consume a token in one step. That code still
+exists in `functions/index.js` but isn't deployed, because Cloud Functions
+require the Blaze (pay-as-you-go) plan, and this project deliberately
+stays on the free Spark plan (see `CLAUDE.md` > Security Principles for the
+full reasoning).
+
+Instead, sharing is implemented with Security Rules alone:
+
+1. The invite document's ID **is** the random token — e.g.
+   `projects/{projectId}/invites/6f3a...`. Rules allow `get` (fetch by
+   exact known ID) but never `list`, so an invite can only ever be reached
+   by someone who already has the exact link — there's no way to browse or
+   guess your way to one.
+2. **Redeeming** is a single-document update: flip `redeemedBy` from
+   `null` to your own uid. Firestore serializes concurrent writes to the
+   same document, so if two people race to redeem the same link, only the
+   first one can win — that's what makes it single-use.
+3. Only after that update succeeds can the redeemer create
+   `projects/{projectId}/members/{their-own-uid}` — the rule for that
+   creation independently re-checks, server-side, that a matching invite
+   really was redeemed by that exact uid.
+
+**Known limitation**: steps 2 and 3 are two separate writes, not one atomic
+transaction (a transaction can't see its own pending writes when it calls
+`get()` inside a rule, so this couldn't be collapsed into one step without
+a trusted server). If a client crashes between them, that invite is spent
+but membership wasn't granted — the owner would need to issue a fresh
+invite. This is a UX rough edge, not a security hole: it cannot be used to
+gain unauthorized access, only to "waste" a single invite link.
 
 ## Automated rules test suite
 
@@ -48,7 +91,9 @@ firebase emulators:exec --only firestore --project demo-maker-project-planner "n
 
 This starts a local Firestore emulator, runs the test suite against it, and
 shuts the emulator down afterward. No network calls to the real Firebase
-project are made. All 13 tests currently pass.
+project are made. All 27 tests currently pass, including the invite/member
+rules described above (single-use redemption, expiry, cross-user token
+misuse, self-only membership creation).
 
 ## App Check
 

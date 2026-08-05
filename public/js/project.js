@@ -8,11 +8,14 @@ import {
   orderBy,
   onSnapshot,
   addDoc,
+  setDoc,
   updateDoc,
   writeBatch,
   serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 import { auth, db } from "./firebase-init.js";
+
+const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const projectId = new URLSearchParams(window.location.search).get("id");
 
@@ -22,6 +25,13 @@ const nameEl = document.getElementById("project-name");
 const metaEl = document.getElementById("project-meta");
 const errorEl = document.getElementById("error");
 const deleteBtn = document.getElementById("delete-project");
+
+const shareSection = document.getElementById("share-section");
+const createInviteBtn = document.getElementById("create-invite");
+const inviteResultEl = document.getElementById("invite-result");
+const inviteLinkInput = document.getElementById("invite-link");
+const copyInviteBtn = document.getElementById("copy-invite");
+const inviteErrorEl = document.getElementById("invite-error");
 
 const stepForm = document.getElementById("step-form");
 const stepTitleInput = document.getElementById("step-title");
@@ -33,6 +43,7 @@ const stepsListEl = document.getElementById("steps-list");
 
 let currentSteps = [];
 let unsubscribeSteps = null;
+let isOwner = false;
 
 if (!projectId) {
   showError("No project specified.");
@@ -58,6 +69,11 @@ async function loadProject(id) {
     const project = snap.data();
     nameEl.textContent = project.name;
     metaEl.textContent = `Category: ${project.category}`;
+
+    isOwner = project.ownerId === auth.currentUser.uid;
+    deleteBtn.hidden = !isOwner;
+    shareSection.hidden = !isOwner;
+
     loadingEl.hidden = true;
     projectEl.hidden = false;
   } catch (err) {
@@ -154,15 +170,18 @@ function renderSteps() {
     downBtn.disabled = index === currentSteps.length - 1;
     downBtn.addEventListener("click", () => moveStep(index, 1));
 
-    const deleteStepBtn = document.createElement("button");
-    deleteStepBtn.type = "button";
-    deleteStepBtn.className = "btn btn--small btn--danger";
-    deleteStepBtn.textContent = "Delete";
-    deleteStepBtn.addEventListener("click", () => deleteStep(step.id, step.title));
-
     actions.appendChild(upBtn);
     actions.appendChild(downBtn);
-    actions.appendChild(deleteStepBtn);
+
+    if (isOwner) {
+      const deleteStepBtn = document.createElement("button");
+      deleteStepBtn.type = "button";
+      deleteStepBtn.className = "btn btn--small btn--danger";
+      deleteStepBtn.textContent = "Delete";
+      deleteStepBtn.addEventListener("click", () => deleteStep(step.id, step.title));
+      actions.appendChild(deleteStepBtn);
+    }
+
     li.appendChild(actions);
 
     stepsListEl.appendChild(li);
@@ -226,6 +245,34 @@ async function deleteStep(stepId, title) {
     stepsErrorEl.textContent = "Couldn't delete step.";
   }
 }
+
+createInviteBtn.addEventListener("click", async () => {
+  inviteErrorEl.textContent = "";
+  createInviteBtn.disabled = true;
+  try {
+    const token = crypto.randomUUID();
+    await setDoc(doc(db, "projects", projectId, "invites", token), {
+      createdBy: auth.currentUser.uid,
+      expiresAt: new Date(Date.now() + INVITE_TTL_MS),
+      redeemedBy: null,
+      redeemedAt: null,
+    });
+    const link = `${window.location.origin}/join.html?projectId=${projectId}&token=${token}`;
+    inviteLinkInput.value = link;
+    inviteResultEl.hidden = false;
+  } catch (err) {
+    console.error(err);
+    inviteErrorEl.textContent = "Couldn't create invite link.";
+  } finally {
+    createInviteBtn.disabled = false;
+  }
+});
+
+copyInviteBtn.addEventListener("click", async () => {
+  await navigator.clipboard.writeText(inviteLinkInput.value);
+  copyInviteBtn.textContent = "Copied!";
+  setTimeout(() => (copyInviteBtn.textContent = "Copy"), 1500);
+});
 
 async function moveStep(index, direction) {
   const otherIndex = index + direction;

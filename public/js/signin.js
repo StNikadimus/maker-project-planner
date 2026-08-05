@@ -4,6 +4,12 @@ import { formatAuthError } from "./auth-errors.js";
 
 const form = document.getElementById("signin-form");
 const errorEl = document.getElementById("error");
+const signupLink = document.getElementById("signup-link");
+
+const next = new URLSearchParams(window.location.search).get("next");
+if (next) {
+  signupLink.href = `signup.html?next=${encodeURIComponent(next)}`;
+}
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -14,7 +20,7 @@ form.addEventListener("submit", async (event) => {
 
   try {
     await signInWithEmailAndPassword(auth, email, password);
-    window.location.href = "dashboard.html";
+    window.location.href = next || "dashboard.html";
   } catch (err) {
     console.error(err);
     errorEl.textContent = formatAuthError(err);

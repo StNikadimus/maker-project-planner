@@ -8,6 +8,12 @@ import { formatAuthError } from "./auth-errors.js";
 
 const form = document.getElementById("signup-form");
 const errorEl = document.getElementById("error");
+const signinLink = document.getElementById("signin-link");
+
+const next = new URLSearchParams(window.location.search).get("next");
+if (next) {
+  signinLink.href = `signin.html?next=${encodeURIComponent(next)}`;
+}
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -25,7 +31,7 @@ form.addEventListener("submit", async (event) => {
       email,
       createdAt: serverTimestamp(),
     });
-    window.location.href = "dashboard.html";
+    window.location.href = next || "dashboard.html";
   } catch (err) {
     console.error(err);
     errorEl.textContent = formatAuthError(err);
