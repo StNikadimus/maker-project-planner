@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Project &ndash; Maker Project Planner</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <main class="page">
+    <p id="loading">Loading&hellip;</p>
+    <div id="project" class="container" hidden>
+      <a href="dashboard.html" class="back-link">&larr; Back to dashboard</a>
+      <div class="card card--wide">
+        <h1 id="project-name"></h1>
+        <p id="project-meta" class="muted"></p>
+        <button id="delete-project" class="btn btn--danger">Delete project</button>
+      </div>
+    </div>
+    <p id="error" class="error-text" role="alert"></p>
+  </main>
+  <script type="module" src="js/project.js"></script>
+</body>
+</html>

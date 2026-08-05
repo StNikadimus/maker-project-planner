@@ -7,12 +7,27 @@
   <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
-  <main class="page page--centered">
+  <main class="page">
     <p id="loading">Loading&hellip;</p>
-    <div id="dashboard" class="card" hidden>
-      <h1>Welcome, <span id="name"></span></h1>
-      <p>Your projects will show up here soon.</p>
-      <button id="signout" class="btn btn--secondary">Sign out</button>
+    <div id="dashboard" class="container" hidden>
+      <header class="dashboard-header">
+        <h1>Welcome, <span id="name"></span></h1>
+        <button id="signout" class="btn btn--secondary">Sign out</button>
+      </header>
+
+      <section class="card card--wide">
+        <h2>New project</h2>
+        <form id="project-form" class="form--inline">
+          <input id="project-name" name="projectName" type="text" placeholder="Project name" required />
+          <button type="submit" class="btn">Add</button>
+        </form>
+        <p id="projects-error" class="error-text" role="alert"></p>
+      </section>
+
+      <section class="card card--wide">
+        <h2>Your projects</h2>
+        <ul id="projects-list" class="projects-list"></ul>
+      </section>
     </div>
   </main>
   <script type="module" src="js/dashboard.js"></script>
