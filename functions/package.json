@@ -1,0 +1,13 @@
+{
+  "name": "functions",
+  "description": "Cloud Functions for Maker Project Planner",
+  "main": "index.js",
+  "engines": {
+    "node": "20"
+  },
+  "private": true,
+  "dependencies": {
+    "firebase-admin": "^12.5.0",
+    "firebase-functions": "^6.0.1"
+  }
+}
