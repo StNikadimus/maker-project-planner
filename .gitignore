@@ -5,3 +5,8 @@ firestore-debug.log
 ui-debug.log
 .DS_Store
 *.log
+.env
+.env.*
+*serviceAccountKey*.json
+dist/
+build/

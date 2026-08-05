@@ -125,6 +125,28 @@ npx firebase-tools login
 npx firebase-tools deploy
 ```
 
+## Git workflow
+
+- After finishing a phase and confirming it works (manually, per that
+  phase's "done when" checklist), commit with a clear message:
+  `git add .` then `git commit -m "Phase N: <short description>"`.
+- Push with `git push -u origin main` every time (not just the first
+  push) — using `-u` repeatedly is harmless and prevents ever hitting a
+  missing-upstream error again.
+- Before every commit, check `git status` (and diff if unsure) and make
+  sure nothing sensitive is staged — no `.env` files, no
+  `serviceAccountKey.json` or other Admin SDK credentials, no API keys of
+  any kind. (The Firebase client `apiKey` in `firebaseConfig.js` is the
+  one exception — see Security Principles above, it's not a secret.)
+- `.gitignore` must at minimum exclude: `node_modules/`, `.env`, `.env.*`,
+  `*serviceAccountKey*.json`, `.DS_Store`, and any build output folders.
+- Never commit a real secret "temporarily, to fix in the next commit" —
+  if something sensitive is accidentally staged, stop and tell the user
+  instead of committing it. Removing it in a later commit does not remove
+  it from git history.
+- If a commit or push fails, show the exact error instead of retrying
+  blindly or suggesting a new repo.
+
 ## Build phases
 
 The app is built in 8 phases (0 through 7): setup, auth, projects CRUD,
