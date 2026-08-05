@@ -14,3 +14,8 @@ export const firebaseConfig = {
   appId: "1:851892085886:web:fd6a4db9e2ddd0784de42f",
   measurementId: "G-6293LS51F7",
 };
+
+// The reCAPTCHA v3 site key is also public/client-visible by design (like
+// apiKey above) — it identifies the site, it doesn't authorize anything by
+// itself. Verification happens server-side in App Check.
+export const appCheckSiteKey = "6LeJanYtAAAAAPFticsygk6Rvur-tHBm1gJmGE8w";

@@ -99,6 +99,10 @@ invites/{inviteId}                  // only ever touched via Cloud Functions
 - `firestore.rules` / `firestore.indexes.json` — Firestore Security Rules and
   index definitions.
 - `firebase.json` / `.firebaserc` — Firebase project configuration.
+- `firestore-tests/` — automated test suite for `firestore.rules`, run
+  against the Firestore emulator. See `SECURITY.md` for how to run it.
+- `SECURITY.md` — plain-language access-control guarantees, how to run the
+  rules test suite, and the API key restriction reminder.
 
 ## Local development
 

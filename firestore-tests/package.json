@@ -1,0 +1,13 @@
+{
+  "name": "firestore-tests",
+  "private": true,
+  "type": "module",
+  "description": "Automated tests for firestore.rules, run against the Firestore emulator",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^3.0.0",
+    "firebase": "^10.13.0"
+  }
+}
