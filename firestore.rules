@@ -136,7 +136,11 @@ service cloud.firestore {
       // collaborator access via isProjectMember(). Permanent for MVP: no
       // "remove collaborator" feature yet, so no update/delete.
       match /members/{uid} {
-        allow read: if isProjectMember(projectId);
+        // Anyone can check their OWN membership doc (even if it doesn't
+        // exist yet — that's how join.js detects "not a member yet" vs
+        // "already joined"). Other members/the owner can see the full list.
+        allow read: if request.auth != null
+          && (request.auth.uid == uid || isProjectMember(projectId));
 
         allow create: if request.auth != null
           && request.auth.uid == uid

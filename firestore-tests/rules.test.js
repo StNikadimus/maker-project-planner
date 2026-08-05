@@ -350,6 +350,19 @@ describe("projects/{projectId}/invites/{token}", () => {
 });
 
 describe("projects/{projectId}/members/{uid}", () => {
+  it("a first-time joiner can read their own (not yet existing) membership doc", async () => {
+    await seedProject();
+    // Not a member, not the owner — this is the pre-redemption check join.js
+    // does. It must resolve to "doesn't exist", not permission-denied.
+    const snap = await assertSucceeds(getDoc(doc(otherDb(), "projects", "project1", "members", OTHER_UID)));
+    if (snap.exists()) throw new Error("expected the membership doc not to exist yet");
+  });
+
+  it("a user cannot read someone else's non-existent membership doc as a fishing check", async () => {
+    await seedProject();
+    await assertFails(getDoc(doc(otherDb(), "projects", "project1", "members", MEMBER_UID)));
+  });
+
   it("a user who redeemed a matching invite can create their own membership", async () => {
     await seedProject();
     await seedInvite("project1", "tok1", { redeemedBy: OTHER_UID, redeemedAt: new Date() });
