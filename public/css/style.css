@@ -222,3 +222,63 @@ input {
   flex: 1;
   min-width: 14rem;
 }
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spinner {
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 3px solid #d8dfef;
+  border-top-color: #2d6cdf;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+.loading-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  min-height: 40vh;
+  opacity: 0.8;
+}
+
+.spinner--inline {
+  display: inline-block;
+  width: 1rem;
+  height: 1rem;
+  border-width: 2px;
+  vertical-align: -0.2em;
+  margin-right: 0.5rem;
+}
+
+/* Shows a spinner over a button's own label while its action is in
+   flight, without changing the button's size. */
+.btn.is-loading {
+  position: relative;
+  color: transparent;
+  pointer-events: none;
+}
+
+.btn.is-loading::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 1rem;
+  height: 1rem;
+  margin: -0.5rem 0 0 -0.5rem;
+  border: 2px solid rgba(255, 255, 255, 0.45);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+.btn--secondary.is-loading::after {
+  border-color: rgba(45, 108, 223, 0.3);
+  border-top-color: #2d6cdf;
+}

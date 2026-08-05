@@ -11,9 +11,12 @@ if (next) {
   signupLink.href = `signup.html?next=${encodeURIComponent(next)}`;
 }
 
+const submitBtn = form.querySelector('button[type="submit"]');
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   errorEl.textContent = "";
+  submitBtn.classList.add("is-loading");
 
   const email = form.email.value.trim();
   const password = form.password.value;
@@ -24,5 +27,6 @@ form.addEventListener("submit", async (event) => {
   } catch (err) {
     console.error(err);
     errorEl.textContent = formatAuthError(err);
+    submitBtn.classList.remove("is-loading");
   }
 });

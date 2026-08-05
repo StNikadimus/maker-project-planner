@@ -9,12 +9,24 @@ const token = params.get("token");
 const statusEl = document.getElementById("status");
 const signinLink = document.getElementById("signin-link");
 
+function setStatus(message, { loading = false } = {}) {
+  statusEl.textContent = "";
+  if (loading) {
+    const spinner = document.createElement("span");
+    spinner.className = "spinner spinner--inline";
+    spinner.setAttribute("role", "status");
+    spinner.setAttribute("aria-label", "Loading");
+    statusEl.appendChild(spinner);
+  }
+  statusEl.appendChild(document.createTextNode(message));
+}
+
 if (!projectId || !token) {
-  statusEl.textContent = "This invite link is missing information.";
+  setStatus("This invite link is missing information.");
 } else {
   onAuthStateChanged(auth, async (user) => {
     if (!user) {
-      statusEl.textContent = "Sign in to accept this invite.";
+      setStatus("Sign in to accept this invite.");
       const next = `join.html?projectId=${projectId}&token=${token}`;
       signinLink.href = `signin.html?next=${encodeURIComponent(next)}`;
       signinLink.hidden = false;
@@ -44,11 +56,11 @@ if (!projectId || !token) {
         joinedAt: serverTimestamp(),
       });
 
-      statusEl.textContent = "Joined! Redirecting…";
+      setStatus("Joined! Redirecting…", { loading: true });
       window.location.href = `project.html?id=${projectId}`;
     } catch (err) {
       console.error(err);
-      statusEl.textContent = "This invite link is invalid, expired, or already used.";
+      setStatus("This invite link is invalid, expired, or already used.");
     }
   });
 }

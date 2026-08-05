@@ -188,6 +188,8 @@ function renderSteps() {
   });
 }
 
+const addStepBtn = stepForm.querySelector('button[type="submit"]');
+
 stepForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   stepsErrorEl.textContent = "";
@@ -198,6 +200,7 @@ stepForm.addEventListener("submit", async (event) => {
   const materials = splitList(stepMaterialsInput.value);
   const tools = splitList(stepToolsInput.value);
 
+  addStepBtn.classList.add("is-loading");
   try {
     await addDoc(collection(db, "projects", projectId, "steps"), {
       title,
@@ -214,6 +217,8 @@ stepForm.addEventListener("submit", async (event) => {
   } catch (err) {
     console.error(err);
     stepsErrorEl.textContent = "Couldn't add step.";
+  } finally {
+    addStepBtn.classList.remove("is-loading");
   }
 });
 
@@ -249,6 +254,7 @@ async function deleteStep(stepId, title) {
 createInviteBtn.addEventListener("click", async () => {
   inviteErrorEl.textContent = "";
   createInviteBtn.disabled = true;
+  createInviteBtn.classList.add("is-loading");
   try {
     const token = crypto.randomUUID();
     await setDoc(doc(db, "projects", projectId, "invites", token), {
@@ -265,6 +271,7 @@ createInviteBtn.addEventListener("click", async () => {
     inviteErrorEl.textContent = "Couldn't create invite link.";
   } finally {
     createInviteBtn.disabled = false;
+    createInviteBtn.classList.remove("is-loading");
   }
 });
 

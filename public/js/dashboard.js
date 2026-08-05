@@ -111,6 +111,8 @@ async function deleteProject(projectId, name) {
   }
 }
 
+const addProjectBtn = projectForm.querySelector('button[type="submit"]');
+
 projectForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   projectsErrorEl.textContent = "";
@@ -118,6 +120,7 @@ projectForm.addEventListener("submit", async (event) => {
   const name = projectNameInput.value.trim();
   if (!name) return;
 
+  addProjectBtn.classList.add("is-loading");
   try {
     await addDoc(collection(db, "projects"), {
       name,
@@ -130,6 +133,8 @@ projectForm.addEventListener("submit", async (event) => {
   } catch (err) {
     console.error(err);
     projectsErrorEl.textContent = "Couldn't create project.";
+  } finally {
+    addProjectBtn.classList.remove("is-loading");
   }
 });
 
