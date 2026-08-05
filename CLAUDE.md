@@ -113,8 +113,18 @@ a `redeemInvite` Cloud Function. See Security Principles below for why, and
 ## Project structure
 
 - `public/` — the Firebase Hosting root. All browser-facing code lives here
-  (`index.html`, `css/`, `js/`). This is also the directory Capacitor will
-  later wrap for the iOS/Android builds.
+  (`index.html`, `css/`, `js/`). This is also the Capacitor `webDir` — the
+  same static site is wrapped as-is for the iOS/Android builds, no build
+  step or separate mobile codebase.
+- `capacitor.config.json` — Capacitor config (appId `com.makerprojectplanner.app`).
+  `android/` and `ios/` are the generated native platform projects — commit
+  them (that's normal for Capacitor; only their build output is
+  gitignored). After changing anything in `public/`, run `npx cap sync` to
+  copy the changes into both native projects before rebuilding.
+- Root `package.json` / `node_modules/` — Capacitor CLI and platform
+  packages only (`@capacitor/core`, `@capacitor/cli`, `@capacitor/android`,
+  `@capacitor/ios`). Unrelated to `functions/` or `firestore-tests/`, which
+  keep their own `package.json`.
 - `src/` — reserved for shared, non-browser source (e.g. code shared between
   tooling/scripts) added in later phases. Empty for now.
 - `functions/` — Cloud Functions source (Admin SDK code, callable functions

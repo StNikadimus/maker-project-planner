@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Maker Project Planner</string>
+    <string name="title_activity_main">Maker Project Planner</string>
+    <string name="package_name">com.makerprojectplanner.app</string>
+    <string name="custom_url_scheme">com.makerprojectplanner.app</string>
+</resources>
