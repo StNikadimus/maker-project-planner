@@ -247,6 +247,10 @@ input {
   opacity: 0.8;
 }
 
+.loading-state[hidden] {
+  display: none;
+}
+
 .spinner--inline {
   display: inline-block;
   width: 1rem;
