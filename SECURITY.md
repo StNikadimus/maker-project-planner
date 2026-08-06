@@ -8,7 +8,38 @@ this project follows.
 ## Access-control guarantees
 
 - **`users/{userId}`** — a signed-in user can only read or write their own
-  profile document. No one can read or write anyone else's profile.
+  profile document, including deleting it (used by the "delete profile"
+  flow in the Profile tab). No one can read, write, or delete anyone else's
+  profile.
+- **`usernames/{username}`** — the doc ID *is* the unique, lowercase
+  username, same "ID as the access-control mechanism" pattern as invites
+  below. Anyone (even signed out) can `read` one exact, already-guessed
+  username to check availability — that's the one deliberate exception to
+  "everything requires auth" in this app, and it only reveals whether a
+  single specific handle is taken, not the full list. Only a signed-in
+  user can `create` a reservation, and only for their own uid. Firestore's
+  create-vs-update routing means a `create` on an already-taken username
+  has no matching rule and is denied — no read-then-write race is possible
+  the way there would be with a manual "check if exists" step. `update` is
+  never allowed; `delete` is owner-only (frees the handle when changing or
+  deleting an account).
+- **`users/{uid}/friends/{friendUid}`** — a mutual friendship edge, written
+  to both users' subcollections. Either of the two named people (the
+  subcollection owner or the friend referenced in the doc) can create or
+  delete it on either side — that's what lets a single client write both
+  sides at once for an instant QR-add or a request-accept. Blocked in
+  either direction blocks creation. Only the subcollection owner can read
+  their own list.
+- **`users/{uid}/friendRequests/{requesterUid}`** — a pending request in
+  the recipient's inbox. Only the requester can create it (never on
+  someone else's behalf), and only if neither side has blocked the other
+  and they're not already friends. Recipient and requester can each read
+  it and delete it (decline / withdraw); no one else can.
+- **`users/{uid}/blocked/{blockedUid}`** — self-only: only the list owner
+  can create, read, or delete entries in their own blocked list.
+- **`reports/{reportId}`** — create-only, and only as yourself
+  (`reporterUid` must match the caller). No read access for anyone,
+  including the reporter — intentionally minimal for now, see `CLAUDE.md`.
 - **`projects/{projectId}`** — a signed-in user can only create a project
   they own (`ownerId` must be their own uid). Read and update are allowed
   for the owner **and** anyone with a `members/{uid}` document under that
@@ -25,9 +56,13 @@ this project follows.
   unredeemed-and-unexpired to redeemed-by-the-caller — once — and *delete*,
   owner-only, for cleaning up spent/expired invites.
 - **`projects/{projectId}/members/{uid}`** — this is what actually grants
-  collaborator access. A user can only create the membership document with
-  their *own* uid as the ID, and only by proving, server-side, that they
-  already hold a matching redeemed invite for this exact project.
+  collaborator access, via one of two mutually-exclusive creation shapes.
+  Either a user creates the document with their *own* uid as the ID, only
+  by proving server-side that they already hold a matching redeemed invite
+  for this exact project — or the project **owner** creates it directly
+  for anyone already in their own `users/{ownerUid}/friends` subcollection,
+  no invite needed. The two shapes stay distinguishable in the data itself
+  (`token` vs `addedVia: "friend"`).
 - Everything not explicitly listed above is denied by default — the rules
   file (`firestore.rules`) starts from deny-all and only opens the narrow
   cases above.
@@ -91,9 +126,13 @@ firebase emulators:exec --only firestore --project demo-maker-project-planner "n
 
 This starts a local Firestore emulator, runs the test suite against it, and
 shuts the emulator down afterward. No network calls to the real Firebase
-project are made. All 27 tests currently pass, including the invite/member
+project are made. All 64 tests currently pass, including the invite/member
 rules described above (single-use redemption, expiry, cross-user token
-misuse, self-only membership creation).
+misuse, self-only membership creation, the friend-direct-add shape), the
+username uniqueness rules (create-once-wins, public read, owner-only
+delete), and the friends/friendRequests/blocked/reports rules (two-party
+create, block prevents new edges/requests, self-only inboxes, report is
+write-only for everyone including the reporter).
 
 ## App Check
 

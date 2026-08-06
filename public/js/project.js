@@ -2,6 +2,7 @@ import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.13.2/f
 import {
   doc,
   getDoc,
+  getDocs,
   deleteDoc,
   collection,
   query,
@@ -32,6 +33,10 @@ const inviteResultEl = document.getElementById("invite-result");
 const inviteLinkInput = document.getElementById("invite-link");
 const copyInviteBtn = document.getElementById("copy-invite");
 const inviteErrorEl = document.getElementById("invite-error");
+const friendsAddListEl = document.getElementById("friends-add-list");
+const friendsAddErrorEl = document.getElementById("friends-add-error");
+const collaboratorsListEl = document.getElementById("collaborators-list");
+const collaboratorsErrorEl = document.getElementById("collaborators-error");
 
 const stepForm = document.getElementById("step-form");
 const stepTitleInput = document.getElementById("step-title");
@@ -43,7 +48,11 @@ const stepsListEl = document.getElementById("steps-list");
 
 let currentSteps = [];
 let unsubscribeSteps = null;
+let unsubscribeMembers = null;
 let isOwner = false;
+let currentMemberUids = new Set();
+let currentMembers = [];
+let ownerFriends = [];
 
 if (!projectId) {
   showError("No project specified.");
@@ -51,6 +60,7 @@ if (!projectId) {
   onAuthStateChanged(auth, (user) => {
     if (!user) {
       if (unsubscribeSteps) unsubscribeSteps();
+      if (unsubscribeMembers) unsubscribeMembers();
       window.location.href = "signin.html";
       return;
     }
@@ -73,6 +83,11 @@ async function loadProject(id) {
     isOwner = project.ownerId === auth.currentUser.uid;
     deleteBtn.hidden = !isOwner;
     shareSection.hidden = !isOwner;
+
+    if (isOwner) {
+      watchMembers(id);
+      loadOwnerFriends();
+    }
 
     loadingEl.hidden = true;
     projectEl.hidden = false;
@@ -280,6 +295,116 @@ copyInviteBtn.addEventListener("click", async () => {
   copyInviteBtn.textContent = "Copied!";
   setTimeout(() => (copyInviteBtn.textContent = "Copy"), 1500);
 });
+
+function watchMembers(id) {
+  unsubscribeMembers = onSnapshot(
+    collection(db, "projects", id, "members"),
+    (snapshot) => {
+      currentMembers = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      currentMemberUids = new Set(currentMembers.map((m) => m.id));
+      renderFriendsAddList();
+      renderCollaboratorsList();
+    },
+    (err) => {
+      console.error(err);
+      friendsAddErrorEl.textContent = "Couldn't load collaborators.";
+    }
+  );
+}
+
+async function loadOwnerFriends() {
+  try {
+    const snap = await getDocs(collection(db, "users", auth.currentUser.uid, "friends"));
+    ownerFriends = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    renderFriendsAddList();
+  } catch (err) {
+    console.error(err);
+    friendsAddErrorEl.textContent = "Couldn't load your friends list.";
+  }
+}
+
+function renderFriendsAddList() {
+  const addable = ownerFriends.filter((f) => !currentMemberUids.has(f.id));
+
+  friendsAddListEl.innerHTML = "";
+  if (addable.length === 0) {
+    friendsAddListEl.innerHTML = '<li class="empty">No friends to add (or they\'re all already collaborators).</li>';
+    return;
+  }
+
+  for (const friend of addable) {
+    const li = document.createElement("li");
+    li.className = "project-item";
+
+    const label = document.createElement("span");
+    label.textContent = `${friend.displayName} (@${friend.username})`;
+    li.appendChild(label);
+
+    const addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "btn btn--small";
+    addBtn.textContent = "Add";
+    addBtn.addEventListener("click", () => addFriendToProject(friend, addBtn));
+    li.appendChild(addBtn);
+
+    friendsAddListEl.appendChild(li);
+  }
+}
+
+async function addFriendToProject(friend, btn) {
+  friendsAddErrorEl.textContent = "";
+  btn.disabled = true;
+  try {
+    await setDoc(doc(db, "projects", projectId, "members", friend.id), {
+      uid: friend.id,
+      addedVia: "friend",
+      displayName: friend.displayName,
+      username: friend.username,
+      joinedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    console.error(err);
+    btn.disabled = false;
+    friendsAddErrorEl.textContent = "Couldn't add friend to project.";
+  }
+}
+
+function renderCollaboratorsList() {
+  collaboratorsListEl.innerHTML = "";
+  if (currentMembers.length === 0) {
+    collaboratorsListEl.innerHTML = '<li class="empty">No collaborators yet.</li>';
+    return;
+  }
+
+  for (const member of currentMembers) {
+    const li = document.createElement("li");
+    li.className = "project-item";
+
+    const label = document.createElement("span");
+    label.textContent = member.username ? `${member.displayName} (@${member.username})` : member.displayName || member.id;
+    li.appendChild(label);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "btn btn--danger btn--small";
+    removeBtn.textContent = "Remove";
+    removeBtn.addEventListener("click", () => removeCollaborator(member.id, member.displayName || member.id));
+    li.appendChild(removeBtn);
+
+    collaboratorsListEl.appendChild(li);
+  }
+}
+
+async function removeCollaborator(memberUid, name) {
+  collaboratorsErrorEl.textContent = "";
+  if (!window.confirm(`Remove ${name} as a collaborator on this project?`)) return;
+  try {
+    await deleteDoc(doc(db, "projects", projectId, "members", memberUid));
+  } catch (err) {
+    console.error(err);
+    collaboratorsErrorEl.textContent = "Couldn't remove collaborator.";
+  }
+}
 
 async function moveStep(index, direction) {
   const otherIndex = index + direction;

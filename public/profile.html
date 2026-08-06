@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Profile &ndash; Maker Project Planner</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <main class="page">
+    <div id="loading" class="loading-state">
+      <span class="spinner" role="status" aria-label="Loading"></span>
+    </div>
+    <div id="profile" class="container container--with-tabs" hidden>
+      <header class="dashboard-header">
+        <h1>Profile</h1>
+        <button id="signout" class="btn btn--secondary">Sign out</button>
+      </header>
+
+      <section class="card card--wide">
+        <h2>Account</h2>
+        <p><strong>Username:</strong> <span id="current-username"></span></p>
+        <p><strong>Name:</strong> <span id="current-displayname"></span></p>
+        <p><strong>Email:</strong> <span id="current-email"></span></p>
+      </section>
+
+      <section class="card card--wide">
+        <h2>Change username</h2>
+        <form id="username-form">
+          <label for="new-username">New username</label>
+          <input
+            id="new-username"
+            name="username"
+            type="text"
+            autocomplete="username"
+            pattern="[a-z][a-z0-9_]{2,19}"
+            title="Lowercase letters, numbers, and underscores. Must start with a letter, 3-20 characters."
+            required
+          />
+          <p class="field-hint">Lowercase letters, numbers, underscores. 3-20 characters, must start with a letter.</p>
+          <button type="submit" class="btn">Update username</button>
+        </form>
+        <p id="username-error" class="error-text" role="alert"></p>
+      </section>
+
+      <section class="card card--wide">
+        <h2>Change password</h2>
+        <form id="password-form">
+          <label for="current-password">Current password</label>
+          <input id="current-password" name="currentPassword" type="password" autocomplete="current-password" required />
+
+          <label for="new-password">New password</label>
+          <input id="new-password" name="newPassword" type="password" autocomplete="new-password" minlength="6" required />
+
+          <button type="submit" class="btn">Update password</button>
+        </form>
+        <p id="password-error" class="error-text" role="alert"></p>
+      </section>
+
+      <section class="card card--wide">
+        <h2>Reset password by email</h2>
+        <p class="muted">Sends a password reset link to your account email instead.</p>
+        <button id="reset-password" class="btn btn--secondary">Send reset email</button>
+        <p id="reset-error" class="error-text" role="alert"></p>
+      </section>
+
+      <section class="card card--wide">
+        <h2>Delete profile</h2>
+        <p class="muted">Permanently deletes your account, your profile, and any projects you own.</p>
+        <button id="delete-profile" class="btn btn--danger">Delete profile</button>
+        <p id="delete-error" class="error-text" role="alert"></p>
+      </section>
+    </div>
+  </main>
+  <nav class="tab-bar">
+    <a href="dashboard.html">Home</a>
+    <a href="friends.html">Friends</a>
+    <a href="profile.html" class="tab--active">Profile</a>
+  </nav>
+  <script type="module" src="js/profile.js"></script>
+</body>
+</html>

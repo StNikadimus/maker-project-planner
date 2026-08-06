@@ -11,3 +11,5 @@ ui-debug.log
 dist/
 build/
 .claude/
+mobile-testing/screenshots/
+mobile-testing/last_dump.xml

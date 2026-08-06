@@ -77,6 +77,10 @@ input {
   margin: 0.5rem 0 0;
 }
 
+.error-text.success-text {
+  color: #2d6cdf;
+}
+
 .container {
   max-width: 40rem;
   margin: 0 auto;
@@ -285,4 +289,60 @@ input {
 .btn--secondary.is-loading::after {
   border-color: rgba(45, 108, 223, 0.3);
   border-top-color: #2d6cdf;
+}
+
+.field-hint {
+  font-size: 0.8rem;
+  opacity: 0.7;
+  margin: 0.25rem 0 0;
+}
+
+.profile-photo {
+  width: 4rem;
+  height: 4rem;
+  border-radius: 50%;
+  object-fit: cover;
+  margin-bottom: 0.75rem;
+  display: block;
+}
+
+.profile-photo--small {
+  width: 2.25rem;
+  height: 2.25rem;
+  margin: 0;
+}
+
+/* Leaves room at the bottom of pages that render the fixed .tab-bar so
+   content doesn't end up underneath it. */
+.container--with-tabs {
+  padding-bottom: calc(4.5rem + env(safe-area-inset-bottom));
+}
+
+.tab-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  border-top: 1px solid #ddd;
+  background: canvas;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.tab-bar a {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.85rem 0;
+  color: inherit;
+  text-decoration: none;
+  opacity: 0.6;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.tab-bar a.tab--active {
+  color: #2d6cdf;
+  opacity: 1;
 }

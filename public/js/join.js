@@ -41,6 +41,9 @@ if (!projectId || !token) {
         return;
       }
 
+      const profileSnap = await getDoc(doc(db, "users", user.uid));
+      const profile = profileSnap.exists() ? profileSnap.data() : {};
+
       // Step 1: claim the invite. This single-document update is what makes
       // the invite single-use — it only succeeds if redeemedBy is still
       // null and it hasn't expired.
@@ -53,6 +56,8 @@ if (!projectId || !token) {
       await setDoc(doc(db, "projects", projectId, "members", user.uid), {
         uid: user.uid,
         token,
+        displayName: profile.displayName || user.email,
+        username: profile.username || "",
         joinedAt: serverTimestamp(),
       });
 

@@ -23,26 +23,160 @@ service cloud.firestore {
             || exists(/databases/$(database)/documents/projects/$(projectId)/members/$(request.auth.uid)));
     }
 
+    function isValidUsername(username) {
+      return username is string && username.matches('^[a-z][a-z0-9_]{2,19}$');
+    }
+
+    function isFriend(ownerUid, otherUid) {
+      return exists(/databases/$(database)/documents/users/$(ownerUid)/friends/$(otherUid));
+    }
+
     // A user may only read or write their own profile document.
     match /users/{userId} {
       allow read: if request.auth != null && request.auth.uid == userId;
 
       allow create: if request.auth != null
         && request.auth.uid == userId
-        && request.resource.data.keys().hasOnly(['displayName', 'email', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['displayName', 'username', 'email', 'createdAt', 'photoURL'])
         && request.resource.data.displayName is string
         && request.resource.data.displayName.size() > 0
+        && isValidUsername(request.resource.data.username)
         && request.resource.data.email == request.auth.token.email
         && request.resource.data.createdAt == request.time;
 
-      // email and createdAt are immutable once set; only displayName may change.
+      // email and createdAt are immutable once set; displayName, username,
+      // and photoURL may change (username changes are paired with a
+      // usernames/{username} create+delete in the same client-side
+      // writeBatch, photoURL changes with a usernames/{username} update —
+      // see CLAUDE.md).
       allow update: if request.auth != null
         && request.auth.uid == userId
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName'])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'username', 'photoURL'])
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0
+        && isValidUsername(request.resource.data.username);
+
+      // Self-delete only, used by the "delete profile" flow.
+      allow delete: if request.auth != null && request.auth.uid == userId;
+
+      // Mutual edge, written to BOTH users' friends subcollections at once
+      // (a client writeBatch) — either the QR-scan "instant add" flow or a
+      // friendRequests accept does this. Either named party may create or
+      // delete the edge on either side: that's what lets one client batch
+      // both documents in a single call. See CLAUDE.md > Security
+      // Principles for why this is safe even though it means a client
+      // could skip the intended request/accept UX for username-search
+      // adds — worst case is an unwanted friend entry, a one-tap
+      // unfriend/block, not a privilege escalation.
+      match /friends/{friendUid} {
+        allow read: if request.auth != null && request.auth.uid == userId;
+
+        allow create: if request.auth != null
+          && (request.auth.uid == userId || request.auth.uid == friendUid)
+          && request.resource.data.keys().hasOnly(['uid', 'username', 'displayName', 'photoURL', 'addedAt'])
+          && request.resource.data.uid == friendUid
+          && request.resource.data.addedAt == request.time
+          && !exists(/databases/$(database)/documents/users/$(userId)/blocked/$(friendUid))
+          && !exists(/databases/$(database)/documents/users/$(friendUid)/blocked/$(userId));
+
+        allow update: if false;
+
+        allow delete: if request.auth != null
+          && (request.auth.uid == userId || request.auth.uid == friendUid);
+      }
+
+      // Pending, recipient-side inbox: userId is the recipient, the doc ID
+      // is the requester's uid (so at most one pending request per pair).
+      // Accepting is a client batch: delete this request + create both
+      // sides of friends/{uid} above, performed by the recipient (who is
+      // one of the two named parties in each write, per that rule).
+      match /friendRequests/{requesterUid} {
+        allow read: if request.auth != null
+          && (request.auth.uid == userId || request.auth.uid == requesterUid);
+
+        allow create: if request.auth != null
+          && request.auth.uid == requesterUid
+          && requesterUid != userId
+          && request.resource.data.keys().hasOnly(['username', 'displayName', 'photoURL', 'requestedAt'])
+          && request.resource.data.requestedAt == request.time
+          && !exists(/databases/$(database)/documents/users/$(userId)/friends/$(requesterUid))
+          && !exists(/databases/$(database)/documents/users/$(userId)/blocked/$(requesterUid))
+          && !exists(/databases/$(database)/documents/users/$(requesterUid)/blocked/$(userId));
+
+        allow update: if false;
+
+        // Recipient declines (or accepts, alongside the friends batch
+        // write), requester withdraws their own pending request.
+        allow delete: if request.auth != null
+          && (request.auth.uid == userId || request.auth.uid == requesterUid);
+      }
+
+      // Self-only, one-directional. Checked by the friends/friendRequests
+      // create rules above in both directions, so either side blocking
+      // stops new requests/adds; existing edges are torn down client-side
+      // in the same batch as creating this doc (both deletes are allowed
+      // by the rules above since the blocker is a named party either way).
+      match /blocked/{blockedUid} {
+        allow read: if request.auth != null && request.auth.uid == userId;
+
+        allow create: if request.auth != null
+          && request.auth.uid == userId
+          && request.resource.data.keys().hasOnly(['blockedAt'])
+          && request.resource.data.blockedAt == request.time;
+
+        allow update: if false;
+
+        allow delete: if request.auth != null && request.auth.uid == userId;
+      }
+    }
+
+    // The doc ID *is* the unique, lowercase handle — same "ID as the whole
+    // access-control mechanism" trick as projects/{id}/invites/{token}.
+    // Firestore only routes a write here through `create` (never `update`)
+    // when the doc doesn't already exist, so a taken username naturally
+    // falls through to no matching rule and gets denied. Read is public
+    // (not just signed-in) because signup needs to availability-check a
+    // candidate username before an account exists yet; it only reveals
+    // whether one exact, already-guessed handle is taken, not the full list.
+    match /usernames/{username} {
+      allow read: if true;
+
+      // displayName/photoURL are denormalized copies (see CLAUDE.md >
+      // Security Principles) so friend search/requests never need to read
+      // another user's private users/{uid} doc.
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasOnly(['uid', 'displayName', 'photoURL'])
+        && request.resource.data.uid == request.auth.uid
         && request.resource.data.displayName is string
         && request.resource.data.displayName.size() > 0;
 
-      allow delete: if false;
+      // The uid (this doc's identity) never changes via update — a
+      // username change is a delete+create pair instead (see
+      // users/{userId}). Update only refreshes displayName/photoURL, e.g.
+      // after a profile-picture change.
+      allow update: if request.auth != null
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'photoURL']);
+
+      // Frees the handle when its owner changes or deletes their username.
+      allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
+    }
+
+    // Intentionally minimal per product decision: capture the signal only,
+    // no read access and no processing yet — where reports go and how
+    // they're handled is deferred to a later phase.
+    match /reports/{reportId} {
+      allow read: if false;
+
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasOnly(['reporterUid', 'reportedUid', 'reason', 'createdAt'])
+        && request.resource.data.reporterUid == request.auth.uid
+        && request.resource.data.reportedUid is string
+        && request.resource.data.reason is string
+        && request.resource.data.createdAt == request.time;
+
+      allow update, delete: if false;
     }
 
     match /projects/{projectId} {
@@ -137,8 +271,7 @@ service cloud.firestore {
 
       // Created only after successfully redeeming a matching invite above
       // (see the get() check below) — this is what actually grants
-      // collaborator access via isProjectMember(). Permanent for MVP: no
-      // "remove collaborator" feature yet, so no update/delete.
+      // collaborator access via isProjectMember().
       match /members/{uid} {
         // Anyone can check their OWN membership doc (even if it doesn't
         // exist yet — that's how join.js detects "not a member yet" vs
@@ -146,14 +279,34 @@ service cloud.firestore {
         allow read: if request.auth != null
           && (request.auth.uid == uid || isProjectMember(projectId));
 
+        // Two mutually-exclusive shapes: the invite-redemption path
+        // (joining user proves a redeemed invite via `token`, unchanged
+        // from before) or the friend-direct-add path (the project owner
+        // adds someone from their own friends list, no invite involved —
+        // `addedVia` instead of `token` keeps the two paths distinguishable
+        // in the data itself). `displayName`/`username` are denormalized
+        // (see CLAUDE.md) so the project page can show a readable
+        // collaborators list without reading anyone's private users/{uid}.
         allow create: if request.auth != null
-          && request.auth.uid == uid
-          && request.resource.data.keys().hasOnly(['uid', 'token', 'joinedAt'])
-          && request.resource.data.uid == request.auth.uid
           && request.resource.data.joinedAt == request.time
-          && get(/databases/$(database)/documents/projects/$(projectId)/invites/$(request.resource.data.token)).data.redeemedBy == request.auth.uid;
+          && request.resource.data.displayName is string
+          && request.resource.data.username is string
+          && (
+            (request.auth.uid == uid
+              && request.resource.data.keys().hasOnly(['uid', 'token', 'displayName', 'username', 'joinedAt'])
+              && request.resource.data.uid == request.auth.uid
+              && get(/databases/$(database)/documents/projects/$(projectId)/invites/$(request.resource.data.token)).data.redeemedBy == request.auth.uid)
+            || (isProjectOwner(projectId)
+              && request.resource.data.keys().hasOnly(['uid', 'addedVia', 'displayName', 'username', 'joinedAt'])
+              && request.resource.data.uid == uid
+              && request.resource.data.addedVia == 'friend'
+              && isFriend(request.auth.uid, uid))
+          );
 
-        allow update, delete: if false;
+        allow update: if false;
+
+        // Owner-only removal — the "remove collaborator" feature.
+        allow delete: if isProjectOwner(projectId);
       }
     }
 

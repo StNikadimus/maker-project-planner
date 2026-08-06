@@ -6,6 +6,8 @@ const MESSAGES = {
   "auth/wrong-password": "Incorrect password.",
   "auth/invalid-credential": "Incorrect email or password.",
   "auth/too-many-requests": "Too many attempts. Please try again later.",
+  "auth/requires-recent-login": "Please sign in again and retry — this action needs a fresh session.",
+  "app/username-taken": "That username was just taken — please try another.",
 };
 
 export function formatAuthError(err) {

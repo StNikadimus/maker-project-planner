@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { initializeTestEnvironment, assertSucceeds, assertFails } from "@firebase/rules-unit-testing";
-import { doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collectionGroup, query, where, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, collectionGroup, query, where, serverTimestamp } from "firebase/firestore";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -105,6 +105,26 @@ async function seedMember(projectId = "project1", uid = MEMBER_UID) {
   });
 }
 
+async function seedFriendEdge(ownerUid, friendUid) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "users", ownerUid, "friends", friendUid), {
+      uid: friendUid,
+      username: `${friendUid}-username`,
+      displayName: `${friendUid}-name`,
+      photoURL: null,
+      addedAt: new Date(),
+    });
+  });
+}
+
+async function seedBlocked(ownerUid, blockedUid) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "users", ownerUid, "blocked", blockedUid), {
+      blockedAt: new Date(),
+    });
+  });
+}
+
 async function seedInvite(projectId, token, overrides = {}) {
   await testEnv.withSecurityRulesDisabled(async (context) => {
     await setDoc(doc(context.firestore(), "projects", projectId, "invites", token), {
@@ -118,10 +138,22 @@ async function seedInvite(projectId, token, overrides = {}) {
 }
 
 describe("users/{userId}", () => {
-  it("owner can create their own profile", async () => {
+  it("owner can create their own profile with a valid username", async () => {
     await assertSucceeds(
       setDoc(doc(ownerDb(), "users", OWNER_UID), {
         displayName: "Owner",
+        username: "owner1",
+        email: "owner@example.com",
+        createdAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("cannot create a profile with an invalid username", async () => {
+    await assertFails(
+      setDoc(doc(ownerDb(), "users", OWNER_UID), {
+        displayName: "Owner",
+        username: "Not Valid!",
         email: "owner@example.com",
         createdAt: serverTimestamp(),
       })
@@ -132,6 +164,7 @@ describe("users/{userId}", () => {
     await assertFails(
       setDoc(doc(otherDb(), "users", OWNER_UID), {
         displayName: "Hacker",
+        username: "hacker1",
         email: "other@example.com",
         createdAt: serverTimestamp(),
       })
@@ -142,6 +175,7 @@ describe("users/{userId}", () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await setDoc(doc(context.firestore(), "users", OWNER_UID), {
         displayName: "Owner",
+        username: "owner1",
         email: "owner@example.com",
         createdAt: new Date(),
       });
@@ -153,11 +187,95 @@ describe("users/{userId}", () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await setDoc(doc(context.firestore(), "users", OWNER_UID), {
         displayName: "Owner",
+        username: "owner1",
         email: "owner@example.com",
         createdAt: new Date(),
       });
     });
     await assertFails(getDoc(doc(anonDb(), "users", OWNER_UID)));
+  });
+
+  it("owner can update their own username", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "users", OWNER_UID), {
+        displayName: "Owner",
+        username: "owner1",
+        email: "owner@example.com",
+        createdAt: new Date(),
+      });
+    });
+    await assertSucceeds(updateDoc(doc(ownerDb(), "users", OWNER_UID), { username: "owner2" }));
+  });
+
+  it("owner can delete their own profile", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "users", OWNER_UID), {
+        displayName: "Owner",
+        username: "owner1",
+        email: "owner@example.com",
+        createdAt: new Date(),
+      });
+    });
+    await assertSucceeds(deleteDoc(doc(ownerDb(), "users", OWNER_UID)));
+  });
+
+  it("another user cannot delete someone else's profile", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "users", OWNER_UID), {
+        displayName: "Owner",
+        username: "owner1",
+        email: "owner@example.com",
+        createdAt: new Date(),
+      });
+    });
+    await assertFails(deleteDoc(doc(otherDb(), "users", OWNER_UID)));
+  });
+});
+
+describe("usernames/{username}", () => {
+  it("a signed-in user can claim an unused username", async () => {
+    await assertSucceeds(
+      setDoc(doc(ownerDb(), "usernames", "owner1"), { uid: OWNER_UID, displayName: "Owner", photoURL: null })
+    );
+  });
+
+  it("cannot claim a username already taken by someone else", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "usernames", "owner1"), { uid: OWNER_UID });
+    });
+    await assertFails(setDoc(doc(otherDb(), "usernames", "owner1"), { uid: OTHER_UID }));
+  });
+
+  it("cannot claim a username for someone else's uid", async () => {
+    await assertFails(setDoc(doc(ownerDb(), "usernames", "owner1"), { uid: OTHER_UID }));
+  });
+
+  it("anyone, even unauthenticated, can read a username doc to check availability", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "usernames", "owner1"), { uid: OWNER_UID });
+    });
+    await assertSucceeds(getDoc(doc(anonDb(), "usernames", "owner1")));
+  });
+
+  it("cannot update a username doc", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "usernames", "owner1"), { uid: OWNER_UID });
+    });
+    await assertFails(updateDoc(doc(ownerDb(), "usernames", "owner1"), { uid: OTHER_UID }));
+  });
+
+  it("the owning uid can delete their username doc to free it", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "usernames", "owner1"), { uid: OWNER_UID });
+    });
+    await assertSucceeds(deleteDoc(doc(ownerDb(), "usernames", "owner1")));
+  });
+
+  it("another user cannot delete someone else's username doc", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "usernames", "owner1"), { uid: OWNER_UID });
+    });
+    await assertFails(deleteDoc(doc(otherDb(), "usernames", "owner1")));
   });
 });
 
@@ -380,6 +498,8 @@ describe("projects/{projectId}/members/{uid}", () => {
       setDoc(doc(otherDb(), "projects", "project1", "members", OTHER_UID), {
         uid: OTHER_UID,
         token: "tok1",
+        displayName: "Other",
+        username: "other1",
         joinedAt: serverTimestamp(),
       })
     );
@@ -417,6 +537,270 @@ describe("projects/{projectId}/members/{uid}", () => {
         uid: MEMBER_UID,
         token: "tok1",
         joinedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("the owner can directly add a friend to the project, no invite needed", async () => {
+    await seedProject();
+    await seedFriendEdge(OWNER_UID, OTHER_UID);
+    await assertSucceeds(
+      setDoc(doc(ownerDb(), "projects", "project1", "members", OTHER_UID), {
+        uid: OTHER_UID,
+        addedVia: "friend",
+        displayName: "Other",
+        username: "other1",
+        joinedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("the owner can remove a collaborator", async () => {
+    await seedProject();
+    await seedMember("project1", OTHER_UID);
+    await assertSucceeds(deleteDoc(doc(ownerDb(), "projects", "project1", "members", OTHER_UID)));
+  });
+
+  it("a non-owner cannot remove a collaborator", async () => {
+    await seedProject();
+    await seedMember("project1", OTHER_UID);
+    await assertFails(deleteDoc(doc(memberDb(), "projects", "project1", "members", OTHER_UID)));
+  });
+
+  it("a member cannot remove themself", async () => {
+    await seedProject();
+    await seedMember("project1", OTHER_UID);
+    await assertFails(deleteDoc(doc(otherDb(), "projects", "project1", "members", OTHER_UID)));
+  });
+
+  it("the owner cannot direct-add someone who isn't their friend", async () => {
+    await seedProject();
+    await assertFails(
+      setDoc(doc(ownerDb(), "projects", "project1", "members", OTHER_UID), {
+        uid: OTHER_UID,
+        addedVia: "friend",
+        joinedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("a non-owner cannot direct-add their own friend to someone else's project", async () => {
+    await seedProject();
+    await seedFriendEdge(MEMBER_UID, OTHER_UID);
+    await assertFails(
+      setDoc(doc(memberDb(), "projects", "project1", "members", OTHER_UID), {
+        uid: OTHER_UID,
+        addedVia: "friend",
+        joinedAt: serverTimestamp(),
+      })
+    );
+  });
+});
+
+describe("users/{uid}/friends/{friendUid}", () => {
+  it("either named party can create the mutual edge on either side", async () => {
+    await assertSucceeds(
+      setDoc(doc(ownerDb(), "users", OWNER_UID, "friends", OTHER_UID), {
+        uid: OTHER_UID,
+        username: "other1",
+        displayName: "Other",
+        photoURL: null,
+        addedAt: serverTimestamp(),
+      })
+    );
+    await assertSucceeds(
+      setDoc(doc(ownerDb(), "users", OTHER_UID, "friends", OWNER_UID), {
+        uid: OWNER_UID,
+        username: "owner1",
+        displayName: "Owner",
+        photoURL: null,
+        addedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("a third party cannot create an edge between two other people", async () => {
+    await assertFails(
+      setDoc(doc(memberDb(), "users", OWNER_UID, "friends", OTHER_UID), {
+        uid: OTHER_UID,
+        username: "other1",
+        displayName: "Other",
+        photoURL: null,
+        addedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("cannot create a friend edge if either side has blocked the other", async () => {
+    await seedBlocked(OWNER_UID, OTHER_UID);
+    await assertFails(
+      setDoc(doc(ownerDb(), "users", OWNER_UID, "friends", OTHER_UID), {
+        uid: OTHER_UID,
+        username: "other1",
+        displayName: "Other",
+        photoURL: null,
+        addedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("only the subcollection owner can read their own friends list", async () => {
+    await seedFriendEdge(OWNER_UID, OTHER_UID);
+    await assertSucceeds(getDocs(collection(ownerDb(), "users", OWNER_UID, "friends")));
+    await assertFails(getDocs(collection(otherDb(), "users", OWNER_UID, "friends")));
+  });
+
+  it("either named party can delete the edge (unfriend)", async () => {
+    await seedFriendEdge(OWNER_UID, OTHER_UID);
+    await assertSucceeds(deleteDoc(doc(otherDb(), "users", OWNER_UID, "friends", OTHER_UID)));
+  });
+
+  it("an unrelated user cannot delete someone else's friend edge", async () => {
+    await seedFriendEdge(OWNER_UID, OTHER_UID);
+    await assertFails(deleteDoc(doc(memberDb(), "users", OWNER_UID, "friends", OTHER_UID)));
+  });
+});
+
+describe("users/{uid}/friendRequests/{requesterUid}", () => {
+  it("the requester can create a pending request in the recipient's inbox", async () => {
+    await assertSucceeds(
+      setDoc(doc(otherDb(), "users", OWNER_UID, "friendRequests", OTHER_UID), {
+        username: "other1",
+        displayName: "Other",
+        photoURL: null,
+        requestedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("cannot create a request on someone else's behalf", async () => {
+    await assertFails(
+      setDoc(doc(memberDb(), "users", OWNER_UID, "friendRequests", OTHER_UID), {
+        username: "other1",
+        displayName: "Other",
+        photoURL: null,
+        requestedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("cannot request someone who has already blocked you", async () => {
+    await seedBlocked(OWNER_UID, OTHER_UID);
+    await assertFails(
+      setDoc(doc(otherDb(), "users", OWNER_UID, "friendRequests", OTHER_UID), {
+        username: "other1",
+        displayName: "Other",
+        photoURL: null,
+        requestedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("cannot request someone you're already friends with", async () => {
+    await seedFriendEdge(OWNER_UID, OTHER_UID);
+    await assertFails(
+      setDoc(doc(otherDb(), "users", OWNER_UID, "friendRequests", OTHER_UID), {
+        username: "other1",
+        displayName: "Other",
+        photoURL: null,
+        requestedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("recipient can read their inbox, requester can read their own outgoing request, a third party cannot", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "users", OWNER_UID, "friendRequests", OTHER_UID), {
+        username: "other1",
+        displayName: "Other",
+        photoURL: null,
+        requestedAt: new Date(),
+      });
+    });
+    await assertSucceeds(getDoc(doc(ownerDb(), "users", OWNER_UID, "friendRequests", OTHER_UID)));
+    await assertSucceeds(getDoc(doc(otherDb(), "users", OWNER_UID, "friendRequests", OTHER_UID)));
+    await assertFails(getDoc(doc(memberDb(), "users", OWNER_UID, "friendRequests", OTHER_UID)));
+  });
+
+  it("recipient can decline (delete) and requester can withdraw (delete)", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "users", OWNER_UID, "friendRequests", OTHER_UID), {
+        username: "other1",
+        displayName: "Other",
+        photoURL: null,
+        requestedAt: new Date(),
+      });
+    });
+    await assertSucceeds(deleteDoc(doc(ownerDb(), "users", OWNER_UID, "friendRequests", OTHER_UID)));
+  });
+});
+
+describe("users/{uid}/blocked/{blockedUid}", () => {
+  it("a user can block someone", async () => {
+    await assertSucceeds(
+      setDoc(doc(ownerDb(), "users", OWNER_UID, "blocked", OTHER_UID), {
+        blockedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("cannot create a block entry in someone else's list", async () => {
+    await assertFails(
+      setDoc(doc(otherDb(), "users", OWNER_UID, "blocked", OTHER_UID), {
+        blockedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("only the owner can read their own blocked list", async () => {
+    await seedBlocked(OWNER_UID, OTHER_UID);
+    await assertSucceeds(getDocs(collection(ownerDb(), "users", OWNER_UID, "blocked")));
+    await assertFails(getDocs(collection(otherDb(), "users", OWNER_UID, "blocked")));
+  });
+});
+
+describe("reports/{reportId}", () => {
+  it("a signed-in user can file a report on someone", async () => {
+    await assertSucceeds(
+      setDoc(doc(ownerDb(), "reports", "report1"), {
+        reporterUid: OWNER_UID,
+        reportedUid: OTHER_UID,
+        reason: "spam",
+        createdAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("cannot file a report claiming to be someone else", async () => {
+    await assertFails(
+      setDoc(doc(otherDb(), "reports", "report1"), {
+        reporterUid: OWNER_UID,
+        reportedUid: MEMBER_UID,
+        reason: "spam",
+        createdAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("no one can read reports, not even the reporter", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "reports", "report1"), {
+        reporterUid: OWNER_UID,
+        reportedUid: OTHER_UID,
+        reason: "spam",
+        createdAt: new Date(),
+      });
+    });
+    await assertFails(getDoc(doc(ownerDb(), "reports", "report1")));
+  });
+
+  it("an unauthenticated request cannot file a report", async () => {
+    await assertFails(
+      setDoc(doc(anonDb(), "reports", "report1"), {
+        reporterUid: OWNER_UID,
+        reportedUid: OTHER_UID,
+        reason: "spam",
+        createdAt: serverTimestamp(),
       })
     );
   });

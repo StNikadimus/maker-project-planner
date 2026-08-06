@@ -38,4 +38,9 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- QR scanning in friends.js uses getUserMedia inside the WebView;
+         Capacitor's bridge forwards the camera permission prompt to the OS
+         once the host app holds this. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 </manifest>

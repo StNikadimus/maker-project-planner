@@ -14,6 +14,18 @@
         <label for="displayName">Name</label>
         <input id="displayName" name="displayName" type="text" autocomplete="name" required />
 
+        <label for="username">Username</label>
+        <input
+          id="username"
+          name="username"
+          type="text"
+          autocomplete="username"
+          pattern="[a-z][a-z0-9_]{2,19}"
+          title="Lowercase letters, numbers, and underscores. Must start with a letter, 3-20 characters."
+          required
+        />
+        <p class="field-hint">Lowercase letters, numbers, underscores. 3-20 characters, must start with a letter. Friends will find you by this later.</p>
+
         <label for="email">Email</label>
         <input id="email" name="email" type="email" autocomplete="email" required />
 

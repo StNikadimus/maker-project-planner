@@ -62,6 +62,15 @@ collaborators via an invite — everyone with access can add and check off
 steps, and sees changes live. A later phase adds an AI-generated time
 estimate per step.
 
+Every account has a unique `username` (separate from the free-form
+`displayName`), set at signup and changeable from the Profile tab. A
+Friends tab lets users add each other either instantly by scanning a QR
+code, or by searching a username (which sends a request the other person
+must accept) — see Security Principles for why those two paths have
+different consent models. Friends can block or report each other, and a
+project owner can add a friend directly as a collaborator without an
+invite link.
+
 Platforms: one responsive web app codebase, which also serves as the public
 website, wrapped with Capacitor to produce native iOS and Android apps.
 
@@ -78,7 +87,31 @@ estimation (that's the stretch phase at the end).
 ```
 users/{uid}
   displayName: string
+  username: string          // unique handle, lowercase [a-z][a-z0-9_]{2,19}
   email: string
+  createdAt: timestamp
+  photoURL: string | null   // always null today — see Security Principles
+
+usernames/{username}        // doc ID *is* the lowercase username
+  uid: uid                  // the owning user
+  displayName: string       // denormalized copy, see Security Principles
+  photoURL: string | null   // denormalized copy, always null today
+
+users/{uid}/friends/{friendUid}      // mutual edge, written to BOTH sides
+  uid: uid                  // = friendUid
+  username, displayName, photoURL: denormalized snapshot of the friend
+  addedAt: timestamp
+
+users/{uid}/friendRequests/{requesterUid}   // pending, recipient's inbox
+  username, displayName, photoURL: denormalized snapshot of the requester
+  requestedAt: timestamp
+
+users/{uid}/blocked/{blockedUid}
+  blockedAt: timestamp
+
+reports/{reportId}          // auto-ID; write-only, no read/processing yet
+  reporterUid, reportedUid: uid
+  reason: string
   createdAt: timestamp
 
 projects/{projectId}
@@ -105,8 +138,10 @@ projects/{projectId}/invites/{token}   // doc ID *is* the random token
 
 projects/{projectId}/members/{uid}     // doc ID = the collaborator's own uid
   uid: uid
-  token: string             // the (now-spent) invite token used to join
   joinedAt: timestamp
+  // exactly one of the next two, depending on how they joined:
+  token: string              // invite path — the now-spent invite token
+  addedVia: "friend"         // direct-add path — owner added them from friends
 ```
 
 Note: this deviates from the original plan, which had a single top-level
@@ -142,6 +177,89 @@ a `redeemInvite` Cloud Function. See Security Principles below for why, and
   owner needs to issue a new one. If the project ever moves to Blaze
   (Phase 7 will require it anyway, for the Claude API key), prefer
   switching back to the Cloud Function version.
+- **Username uniqueness (decided 2026-08-06)** reuses the exact same
+  "document ID is the whole access-control mechanism" trick as invite
+  tokens: `usernames/{username}` doc IDs are the lowercase handle itself,
+  and Firestore only routes a write through the `allow create` branch (not
+  `allow update`) when the doc doesn't already exist — so a taken username
+  naturally has no matching rule and gets denied, no Cloud Function needed.
+  Read is public (`allow read: if true`), unlike every other collection in
+  this app, because signup needs to availability-check a candidate username
+  *before* the account (and its auth token) exists — it only reveals
+  whether one exact, already-guessed handle is taken, not the full list, so
+  this doesn't weaken anything. Changing your username (already
+  authenticated) is a single atomic `writeBatch` — old handle freed, new
+  handle claimed, `users/{uid}.username` updated, all-or-nothing. Signup
+  itself has one unavoidable non-atomic seam, same shape as the invite
+  tradeoff above: Firebase Auth account creation and the Firestore
+  username-claim batch are two separate calls, so a race loss on the
+  username *after* the account was created is possible. Unlike the invite
+  case, this is handled with a clean rollback rather than an accepted gap:
+  `signup.js` calls `deleteUser()` on the just-created account immediately
+  (the session is seconds old, no reauth needed) and asks the user to
+  retry, so signup never leaves an orphaned account.
+- **Delete-profile does not cascade into other people's projects.** It
+  deletes each project the user owns (same shallow delete the dashboard's
+  existing "Delete" button already does — leaves that project's `steps`/
+  `invites`/`members` subcollections orphaned, a pre-existing accepted
+  tradeoff, not something this feature changes), their own `users/{uid}`
+  doc, and their `usernames/{username}` doc. It does **not** remove their
+  `members/{uid}` doc from projects owned by *other* people — that path is
+  `allow update, delete: if false` ("permanent for MVP", see
+  `firestore.rules`), and enabling it is really a separate "remove
+  collaborator" feature decision, not part of account deletion.
+- **Friends (decided 2026-08-06)**: two different consent models for
+  adding a friend, chosen by the user — QR-scan is instant (in-person
+  scanning implies consent), username search creates a
+  `friendRequests` doc the recipient must accept. Both end up creating the
+  exact same `users/{uid}/friends/{friendUid}` mutual-edge shape (written
+  to both users' subcollections in one `writeBatch`), so a single Firestore
+  rule covers both: either of the two named parties may create or delete
+  the edge on either side (`request.auth.uid == ownerUid ||
+  request.auth.uid == friendUid`). That rule can't distinguish *why* a
+  write is happening, so a client could technically skip the intended
+  request/accept UX and instant-add a stranger found via search — accepted
+  tradeoff, same "rules are the boundary, the UI is only UX" shape as
+  everywhere else in this app; worst case is an unwanted friends-list
+  entry, a one-tap unfriend/block, not a privilege escalation.
+  `users/{uid}` stays exactly as private as before (no other user may ever
+  read it, email included) — anything another user needs to see
+  (username, displayName, photoURL) is **denormalized** into the already-
+  public `usernames/{username}` doc and copied again into the
+  `friends`/`friendRequests` edge docs at write time, so rendering a
+  friends list or search result never reads anyone else's private profile.
+  Blocking (`users/{uid}/blocked/{blockedUid}`, self-only) is checked by
+  both the `friends` and `friendRequests` create rules in both directions.
+  Report (`reports/{reportId}`) is deliberately minimal per product
+  decision: write-only, capturing the signal only — no read access, no
+  admin UI, no processing; that's future work.
+  QR generation/scanning is pure web (a CDN-loaded `qrcode` library to
+  render your own code, `getUserMedia` + a CDN-loaded `jsQR` decoder to
+  read someone else's), not a native Capacitor barcode plugin — avoids a
+  new native dependency and any `AndroidManifest` intent-filter work
+  beyond the `CAMERA` permission itself. The QR payload is just the plain
+  username string; scanning happens entirely inside the already-open app,
+  so there's no reason to involve OS-level deep linking.
+  Direct-add-to-project (`projects/{id}/members/{uid}` with `addedVia:
+  "friend"` instead of `token`) extends the existing invite-redemption
+  create rule with a second, mutually exclusive shape: the project owner
+  may create the doc directly for anyone in their own
+  `users/{ownerUid}/friends` subcollection, no invite involved.
+- **Profile pictures were built, then deliberately dropped, 2026-08-06.**
+  A working version existed (Cloud Storage upload, `storage.rules`,
+  `profile.js` upload UI) but Storage had never been enabled on this
+  Firebase project, and enabling it requires a one-time manual "Get
+  Started" click in the console — the user chose to skip the feature
+  entirely rather than take that step, the same instinct as the
+  Blaze-plan avoidance above even though Storage's free tier doesn't
+  actually require billing. All of that code was removed again (see git
+  history around this date if it's ever wanted back). The `photoURL: string
+  | null` field on `users/{uid}` and the `photoURL` denormalized copies on
+  `usernames/{username}` and the friends/friendRequests edges were **kept**
+  in the data model and rules — they cost nothing sitting at `null` and
+  keep the door open for re-adding this later without another rules
+  migration — but nothing in the client ever sets them to non-null right
+  now.
 - Real secrets — the Firebase Admin service account, and later the
   Claude/LLM API key — live only in Cloud Functions config/secret manager.
   Never in client code, never committed to git.
@@ -190,6 +308,15 @@ a `redeemInvite` Cloud Function. See Security Principles below for why, and
   against the Firestore emulator. See `SECURITY.md` for how to run it.
 - `SECURITY.md` — plain-language access-control guarantees, how to run the
   rules test suite, and the API key restriction reminder.
+- `mobile-testing/` — reusable ADB-driving helpers (`lib.sh`) plus runnable
+  end-to-end phone test scripts, built because hand-driving ADB taps by
+  hardcoded pixel coordinates kept breaking (the on-screen keyboard reflows
+  the WebView layout every time it opens/closes). The pattern that actually
+  works: dump the UI immediately before every tap, find the element's
+  *current* bounds, tap its center — never reuse coordinates from an
+  earlier dump. See the comments at the top of `lib.sh` before writing a
+  new test script; extend it rather than re-deriving the pattern by hand
+  again.
 
 ## Local development
 
@@ -242,7 +369,9 @@ working non-interactive path:
    ```
    (`--only` can be `hosting`, `firestore` (rules+indexes), `firestore:rules`,
    or `functions` as needed — functions deploy will fail until the project
-   is on Blaze, see the invite-redemption note above.)
+   is on Blaze, see the invite-redemption note above. No `storage` target —
+   Cloud Storage was deliberately never enabled on this project, see
+   Security Principles.)
 
 `login:ci` is deprecated but functional; firebase-tools itself suggests a
 service account + `GOOGLE_APPLICATION_CREDENTIALS` as the modern
@@ -303,9 +432,70 @@ successful build. Status as of 2026-08-05:
   `window.confirm()` dialogs — inside a real Android emulator against the
   live Firebase project). iOS platform files generated but **never built
   or tested** — no Mac available yet.
-- **Currently**: a UI polish pass on top of the finished phases (e.g. a
-  proper loading-spinner component replacing plain "Loading…" text) before
-  starting Phase 7. Take direction from the user on what else to polish.
+- **Currently**: past the initial UI polish pass (loading-spinner component
+  done — including a real bug fix, see below). Built, in order: a bottom
+  tab bar (Home / Friends / Profile), a Profile page (change username,
+  change password, reset password by email, delete profile), and the
+  Friends feature itself (QR-instant-add, username-search-add with
+  request/accept, block, unfriend, report, and adding a friend directly to
+  a project without an invite link) — see Security Principles above for
+  the design. Profile-picture upload was also built and then deliberately
+  removed again (Cloud Storage was never enabled on this project and the
+  user chose to skip it rather than enable it — see Security Principles);
+  `photoURL` fields remain in the data model at `null` for later.
+  `firestore.rules` and `hosting` are now deployed to the live project
+  (2026-08-06). The Firestore rules test suite is green (64 tests). On the
+  real phone, against the live deployed rules,
+  `mobile-testing/test-signup-and-profile.sh` passes clean end-to-end:
+  sign up with username, tab bar nav, change username, change password,
+  reset-password email, sign out, sign back in with the new password, and
+  delete-profile (with reauth) all confirmed working — that script is
+  self-cleaning (its own delete-profile step removes the throwaway
+  account) and safe to re-run any time. The Friends feature itself (QR
+  add, username-search request/accept, block, unfriend, report,
+  direct-add-to-project) is written and rules-tested but **not yet
+  verified on-device** — that's the very next thing to do. Two real ADB
+  automation gotchas were hit and fixed while writing that first script,
+  both now handled in `mobile-testing/lib.sh` — worth reading before
+  writing the Friends test script rather than rediscovering them: (1) the
+  `.tab-bar`'s `position: fixed` links report `[0,0][0,0]` bounds for
+  their `text=` nodes in the accessibility dump, but the same `<nav>`
+  landmark is *also* exposed as a second accessibility node near the
+  bottom of the screen with a working `content-desc` and correct bounds —
+  `tap_tab()` uses that. (2) elements below the fold on a freshly-loaded
+  page can report `[0,0][0,0]` too, until scrolled into view at least once
+  — `scroll_down`/`scroll_to_top` exist for this.
+  `mobile-testing/test-friends.sh` is written (two throwaway accounts,
+  covers username-search request/accept, direct-add-to-project, unfriend —
+  QR-scan itself isn't automatable, it needs a camera pointed at a second
+  device) but got interrupted mid-run on 2026-08-06: after roughly two
+  hours of continuous heavy on-device automation, the WebView's `.tab-bar`
+  stopped rendering *and* stopped being tappable at its known coordinates
+  — reproduced after a full app uninstall+reinstall too, which rules out
+  app-level state/cache as the cause. This looks like a device/System
+  WebView-level degradation from the sheer amount of testing done in one
+  sitting, not a code bug (the same tab bar rendered and worked correctly
+  dozens of times earlier the same session, including a full clean
+  `test-signup-and-profile.sh` pass). The user is restarting the test
+  phone and taking over verification manually from here. If this recurs
+  after a fresh restart, it's worth treating as a real lead rather than
+  dismissing it again. Take direction from the user on what comes after
+  that.
+- **2026-08-06 bug fixes**: found via a real end-to-end pass on a physical
+  Android phone (not the emulator — see the note under Local development
+  about nested-virtualization emulator flakiness on this dev VM). Two real
+  bugs, both fixed: (1) `.loading-state { display: flex }` in
+  `style.css` had the same CSS specificity as the browser's default
+  `[hidden] { display: none }` and always won since it's declared later in
+  the cascade, so `loadingEl.hidden = true` never actually hid the spinner
+  on the dashboard or project page — fixed with an explicit
+  `.loading-state[hidden] { display: none; }` override. (2) Invite-link
+  creation intermittently failed with `permission-denied`: `project.js`
+  computed `expiresAt` as the *client's* `Date.now() + 7d`, but
+  `firestore.rules` compared it against `request.time` (the *server's*
+  clock) with zero tolerance for the same 7-day span, so any clock skew or
+  network latency flipped the comparison — fixed by giving the rule a
+  10-minute buffer.
 - **Phase 7 — AI step-time estimation**: not started. Needs a Cloud
   Function to call the Claude API without exposing the key client-side —
   will hit the same Blaze-plan wall as Phase 5 did. Raise that tradeoff

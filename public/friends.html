@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Friends &ndash; Maker Project Planner</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <!-- QR generation is imported as an ES module directly in friends.js
+       (the qrcode npm package has no prebuilt classic-script browser
+       bundle — jsdelivr's +esm auto-bundler is the reliable path, same
+       pattern the Firebase SDK already uses). jsQR (scanning) does ship a
+       real UMD bundle, so a plain classic <script> works for that one. -->
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+</head>
+<body>
+  <main class="page">
+    <div id="loading" class="loading-state">
+      <span class="spinner" role="status" aria-label="Loading"></span>
+    </div>
+    <div id="friends" class="container container--with-tabs" hidden>
+      <header class="dashboard-header">
+        <h1>Friends</h1>
+        <button id="signout" class="btn btn--secondary">Sign out</button>
+      </header>
+
+      <section class="card card--wide">
+        <h2>Friend requests</h2>
+        <ul id="requests-list" class="projects-list"></ul>
+        <p id="requests-error" class="error-text" role="alert"></p>
+      </section>
+
+      <section class="card card--wide">
+        <h2>Add by username</h2>
+        <form id="search-form" class="form--inline">
+          <input id="search-input" type="text" placeholder="username" autocomplete="off" />
+          <button type="submit" class="btn">Search</button>
+        </form>
+        <p class="field-hint">Sends a friend request &mdash; they need to accept before you're friends.</p>
+        <ul id="search-results" class="projects-list"></ul>
+        <p id="search-error" class="error-text" role="alert"></p>
+      </section>
+
+      <section class="card card--wide">
+        <h2>QR code</h2>
+        <p class="field-hint">Scanning someone's QR adds them instantly, no request needed.</p>
+        <button id="show-qr-btn" class="btn btn--secondary">Show my QR</button>
+        <button id="scan-qr-btn" class="btn btn--secondary">Scan a QR</button>
+        <button id="stop-scan-btn" class="btn btn--secondary" hidden>Stop scanning</button>
+
+        <div id="my-qr-wrap" hidden>
+          <canvas id="my-qr-canvas"></canvas>
+        </div>
+        <div id="scan-wrap" hidden>
+          <video id="scan-video" playsinline muted></video>
+          <canvas id="scan-canvas" hidden></canvas>
+        </div>
+        <p id="qr-error" class="error-text" role="alert"></p>
+      </section>
+
+      <section class="card card--wide">
+        <h2>Your friends</h2>
+        <ul id="friends-list" class="projects-list"></ul>
+        <p id="friends-error" class="error-text" role="alert"></p>
+      </section>
+    </div>
+  </main>
+  <nav class="tab-bar">
+    <a href="dashboard.html">Home</a>
+    <a href="friends.html" class="tab--active">Friends</a>
+    <a href="profile.html">Profile</a>
+  </nav>
+  <script type="module" src="js/friends.js"></script>
+</body>
+</html>
