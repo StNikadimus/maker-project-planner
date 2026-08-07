@@ -192,6 +192,11 @@ projects/{projectId}/members/{uid}     // doc ID = the collaborator's own uid
   // exactly one of the next two, depending on how they joined:
   token: string              // invite path — the now-spent invite token
   addedVia: "friend"         // direct-add path — owner added them from friends
+  viewWorkspaceId: uid | string  // invite path only — the JOINER's own
+                                   // choice of which of THEIR OWN tabs this
+                                   // shows under, picked at accept time;
+                                   // absent on the direct-add path, client
+                                   // defaults a missing value to Personal
 ```
 
 Note: this deviates from the original plan, which had a single top-level
@@ -381,6 +386,39 @@ a `redeemInvite` Cloud Function. See Security Principles below for why, and
   whole query (the client only ever lists one already-known workspace's
   own subcollection) — same reasoning that already made the `students`
   roster listing and `isTeacherOfProject()` safe.
+- **Team tab CSS bug (fixed 2026-08-07)**: the exact same specificity bug
+  as the 2026-08-06 loading-spinner fix, on a different element —
+  `.tab-bar a { display: flex }` has higher specificity than the
+  browser's default `[hidden] { display: none }`, so `#team-tab`'s
+  `hidden` attribute was visually ignored and the Team tab stayed visible
+  even outside a Business workspace. Fixed with the same pattern:
+  `.tab-bar a[hidden] { display: none; }`. Worth checking for this
+  specificity trap on any future `hidden`-toggled element sharing a class
+  with other cascade rules.
+- **Shared projects respect the joiner's own workspace tab, not the
+  sharer's (decided 2026-08-07)**: previously the dashboard's "Shared
+  with you" list showed every project you're a collaborator on,
+  regardless of which of your own tabs (Personal/Business/Education) was
+  active — so a project someone shared with you from *their* Business
+  workspace showed up even while you were looking at your own Personal
+  tab. Fixed by adding `members/{uid}.viewWorkspaceId`, set once at
+  accept-time and never the *sharer's* workspace at all — it's entirely
+  the *joiner's own* choice of which of their own tabs to file the share
+  under. `join.html`/`join.js` now shows a picker ("Accept this on which
+  profile?") whenever the joiner has more than just Personal open
+  (skipped, defaulting straight to Personal, when there's no real
+  choice); the `members/{uid}` create rule (invite-redemption path only)
+  validates the choice is either their own uid or a workspace they've
+  actually opened (`get(users/{their-uid}).businessWorkspaceId`/
+  `teacherWorkspaceId`) — you can't claim a tab you don't have.
+  Direct-add (friend or Team, no invite link — the owner creates the
+  `members/{uid}` doc themselves) **never sets this field**, because the
+  owner doesn't know the recipient's preference; `dashboard.js` defaults
+  a missing value to the viewer's own uid (Personal) when filtering,
+  matching the pre-existing behavior for that path. `renderSharedProjects()`
+  re-filters both when the underlying `members` data changes *and* when
+  the active tab changes (the two are independent triggers — switching
+  tabs doesn't produce a new Firestore snapshot).
 - **Profile pictures were built, then deliberately dropped, 2026-08-06.**
   A working version existed (Cloud Storage upload, `storage.rules`,
   `profile.js` upload UI) but Storage had never been enabled on this
@@ -616,8 +654,10 @@ the test phone via `adb install -r`.
   - Bump **MAJOR** (reset MINOR to 0) only for a genuinely big new
     feature — the user's own judgment call each time, not a fixed rule
     (e.g. v1.3 → v2.0).
-  - **Current version: v1.0** (2026-08-07 — Business/Education
-    workspaces + the Business Team tab). This is the *first* versioned
+  - **Current version: v1.1** (2026-08-07 — Team-tab CSS-hidden bug fix,
+    shared-projects now scoped to the joiner's own chosen workspace tab
+    via the new invite-accept picker). v1.0 (same day) was Business/
+    Education workspaces + the Business Team tab, the first versioned
     release; earlier builds this session were installed directly via
     `adb install` with no formal release.
 - **File naming**: `maker-project-planner-vX.Y.apk`.

@@ -37,6 +37,7 @@ let unsubscribeStudents = null;
 let currentUser = null;
 let userData = null;
 let activeWorkspaceId = null;
+let currentSharedMemberDocs = [];
 
 onAuthStateChanged(auth, async (user) => {
   if (!user) {
@@ -59,9 +60,9 @@ onAuthStateChanged(auth, async (user) => {
   const sharedQuery = query(collectionGroup(db, "members"), where("uid", "==", user.uid));
   unsubscribeShared = onSnapshot(
     sharedQuery,
-    async (snapshot) => {
-      const projectDocs = await Promise.all(snapshot.docs.map((memberDoc) => getDoc(memberDoc.ref.parent.parent)));
-      renderProjectList(sharedProjectsListEl, projectDocs.filter((d) => d.exists()), { showDelete: false });
+    (snapshot) => {
+      currentSharedMemberDocs = snapshot.docs;
+      renderSharedProjects();
     },
     (err) => {
       console.error(err);
@@ -114,7 +115,23 @@ workspaceSelectEl.addEventListener("change", () => {
 function refreshForWorkspace() {
   watchOwnedProjects();
   watchStudents();
+  renderSharedProjects();
   teamTabEl.hidden = !isBusinessWorkspaceActive(currentUser.uid, userData.businessWorkspaceId);
+}
+
+// A shared project only shows up under the tab the joiner chose to accept
+// it on (join.js's viewWorkspaceId) — that's the joiner's OWN choice, not
+// the sharing owner's workspace. Direct-add (friend/team, no invite link)
+// never sets viewWorkspaceId, so it defaults to Personal. Re-run both when
+// the underlying member docs change AND when the active tab changes —
+// the collectionGroup listener only fires on the former.
+async function renderSharedProjects() {
+  const relevant = currentSharedMemberDocs.filter((memberDoc) => {
+    const viewWorkspaceId = memberDoc.data().viewWorkspaceId || currentUser.uid;
+    return viewWorkspaceId === activeWorkspaceId;
+  });
+  const projectDocs = await Promise.all(relevant.map((memberDoc) => getDoc(memberDoc.ref.parent.parent)));
+  renderProjectList(sharedProjectsListEl, projectDocs.filter((d) => d.exists()), { showDelete: false });
 }
 
 function watchOwnedProjects() {

@@ -515,15 +515,28 @@ service cloud.firestore {
         // in the data itself). `displayName`/`username` are denormalized
         // (see CLAUDE.md) so the project page can show a readable
         // collaborators list without reading anyone's private users/{uid}.
+        // viewWorkspaceId (invite-redemption path only) is the joiner's
+        // own choice, made at accept-time in join.js, of which of THEIR
+        // OWN workspace tabs this shared project should appear under —
+        // it has nothing to do with the owner's workspace. Must be either
+        // their own uid (Personal) or a workspace they've actually opened
+        // themselves, so no one can claim a Business/Education tab they
+        // don't have. The friend-direct-add path (owner adds someone
+        // directly) never sets it — the owner doesn't know the
+        // recipient's preference — so the client defaults a missing
+        // value to Personal when rendering (see dashboard.js).
         allow create: if request.auth != null
           && request.resource.data.joinedAt == request.time
           && request.resource.data.displayName is string
           && request.resource.data.username is string
           && (
             (request.auth.uid == uid
-              && request.resource.data.keys().hasOnly(['uid', 'token', 'displayName', 'username', 'joinedAt'])
+              && request.resource.data.keys().hasOnly(['uid', 'token', 'displayName', 'username', 'joinedAt', 'viewWorkspaceId'])
               && request.resource.data.uid == request.auth.uid
-              && get(/databases/$(database)/documents/projects/$(projectId)/invites/$(request.resource.data.token)).data.redeemedBy == request.auth.uid)
+              && get(/databases/$(database)/documents/projects/$(projectId)/invites/$(request.resource.data.token)).data.redeemedBy == request.auth.uid
+              && (request.resource.data.viewWorkspaceId == request.auth.uid
+                  || request.resource.data.viewWorkspaceId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('businessWorkspaceId', null)
+                  || request.resource.data.viewWorkspaceId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('teacherWorkspaceId', null)))
             || (isProjectOwner(projectId)
               && request.resource.data.keys().hasOnly(['uid', 'addedVia', 'displayName', 'username', 'joinedAt'])
               && request.resource.data.uid == uid

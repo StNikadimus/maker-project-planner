@@ -574,7 +574,7 @@ describe("projects/{projectId}/members/{uid}", () => {
     await assertFails(getDoc(doc(otherDb(), "projects", "project1", "members", MEMBER_UID)));
   });
 
-  it("a user who redeemed a matching invite can create their own membership", async () => {
+  it("a user who redeemed a matching invite can create their own membership, accepting on Personal", async () => {
     await seedProject();
     await seedInvite("project1", "tok1", { redeemedBy: OTHER_UID, redeemedAt: new Date() });
     await assertSucceeds(
@@ -583,6 +583,39 @@ describe("projects/{projectId}/members/{uid}", () => {
         token: "tok1",
         displayName: "Other",
         username: "other1",
+        viewWorkspaceId: OTHER_UID,
+        joinedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("can accept on a Business workspace they actually have open", async () => {
+    await seedProject();
+    await seedInvite("project1", "tok1", { redeemedBy: OTHER_UID, redeemedAt: new Date() });
+    await seedUser(OTHER_UID, { businessWorkspaceId: "otherbiz" });
+    await assertSucceeds(
+      setDoc(doc(otherDb(), "projects", "project1", "members", OTHER_UID), {
+        uid: OTHER_UID,
+        token: "tok1",
+        displayName: "Other",
+        username: "other1",
+        viewWorkspaceId: "otherbiz",
+        joinedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("cannot accept on a Business workspace they don't actually have open", async () => {
+    await seedProject();
+    await seedInvite("project1", "tok1", { redeemedBy: OTHER_UID, redeemedAt: new Date() });
+    await seedUser(OTHER_UID);
+    await assertFails(
+      setDoc(doc(otherDb(), "projects", "project1", "members", OTHER_UID), {
+        uid: OTHER_UID,
+        token: "tok1",
+        displayName: "Other",
+        username: "other1",
+        viewWorkspaceId: "someone-elses-workspace",
         joinedAt: serverTimestamp(),
       })
     );

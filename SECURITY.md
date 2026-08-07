@@ -102,7 +102,11 @@ this project follows.
   for this exact project — or the project **owner** creates it directly
   for anyone already in their own `users/{ownerUid}/friends` subcollection,
   no invite needed. The two shapes stay distinguishable in the data itself
-  (`token` vs `addedVia: "friend"`).
+  (`token` vs `addedVia: "friend"`). The invite-redemption shape also
+  requires `viewWorkspaceId` — the joiner's own choice of which of *their*
+  workspace tabs to file this share under (validated against their own
+  `businessWorkspaceId`/`teacherWorkspaceId`, so they can't claim a tab
+  they don't have) — see "Shared projects and workspace tabs" below.
 - Everything not explicitly listed above is denied by default — the rules
   file (`firestore.rules`) starts from deny-all and only opens the narrow
   cases above.
@@ -232,6 +236,23 @@ projects (`ownerId`/`workspaceId`, both plain fields — safe for `list`,
 see the workspace-scoping section above) followed by a batched delete of
 that person's `members/{uid}` doc on each one.
 
+## Shared projects and workspace tabs
+
+`viewWorkspaceId` on an invite-redeemed `members/{uid}` doc is **the
+joiner's own choice**, made once at accept time in `join.html`/`join.js`,
+of which of *their own* tabs (Personal/Business/Education) a shared
+project should appear under — it has nothing to do with which workspace
+the *sharing* owner used. `join.js` only shows a picker when the joiner
+actually has more than one tab open; otherwise it silently defaults to
+Personal, same as before this feature existed. The create rule validates
+the choice against the joiner's own `users/{uid}` doc
+(`businessWorkspaceId`/`teacherWorkspaceId`) so no one can claim a tab
+they haven't opened themselves. The direct-add path (an owner adding a
+friend or Team member straight to a project, no invite link) never sets
+this field at all — the owner has no way to know the recipient's
+preference — so `dashboard.js` treats a missing value as Personal when
+filtering the "Shared with you" list.
+
 ## Automated rules test suite
 
 `firestore-tests/` contains an automated test suite (Node's built-in test
@@ -256,7 +277,7 @@ firebase emulators:exec --only firestore --project demo-maker-project-planner "n
 
 This starts a local Firestore emulator, runs the test suite against it, and
 shuts the emulator down afterward. No network calls to the real Firebase
-project are made. All 115 tests currently pass, including the invite/member
+project are made. All 117 tests currently pass, including the invite/member
 rules described above (single-use redemption, expiry, cross-user token
 misuse, self-only membership creation, the friend-direct-add shape), the
 username uniqueness rules (create-once-wins, public read, owner-only
@@ -272,7 +293,9 @@ including that it stops the teacher's read access afterward), and the
 Business Team tab rules (owner-only team roster add/remove requiring
 friendship, business-only, a roster `list` test matching `team.js`'s real
 query, and that only the project owner — never a collaborator — can
-toggle `visibleToTeam`).
+toggle `visibleToTeam`), and the invite-accept `viewWorkspaceId` rules
+(accepting on Personal, accepting on a Business/Education workspace the
+joiner actually has open, and rejecting a claimed workspace they don't).
 
 ## App Check
 

@@ -374,3 +374,7 @@ input {
   color: #2d6cdf;
   opacity: 1;
 }
+
+.tab-bar a[hidden] {
+  display: none;
+}
