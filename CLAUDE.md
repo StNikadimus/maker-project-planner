@@ -577,11 +577,37 @@ terminal hits the same problem.
 
 **Decided 2026-08-07, standing instruction for every future APK build**:
 whenever a new debug APK is built and ready for the user to test, publish
-it as a GitHub Release with the APK attached (`gh release create <tag>
-<apk-path> --title <tag> --notes "..."` — `gh` is already authenticated in
-this environment, see Git workflow below for the same account). This is
-in addition to, not instead of, installing it on the test phone via `adb
-install -r`.
+it on GitHub **two ways** (both, not either/or — confirmed with the user
+after initially only doing the first one):
+
+1. A **GitHub Release** with the APK attached: `gh release create <tag>
+   <apk-path> --title <tag> --notes "..."` (`gh` is already authenticated
+   in this environment as the same account used for git push, see Git
+   workflow below).
+2. A commit on the real `releases` **branch** (`git branch -a` — it
+   already exists, tracks `origin/releases`) adding the new versioned APK
+   file. This branch's history is deliberately unrelated to `main`'s (it
+   started as the user's own empty orphan-style commit) — it exists
+   purely to accumulate binary APK files release over release, not to
+   track source. Workflow for a new version, from a clean `main`:
+   ```
+   cp android/app/build/outputs/apk/debug/app-debug.apk ./maker-project-planner-vX.Y.apk
+   git checkout releases
+   git fetch origin releases && git rebase origin/releases   # in case it moved
+   git add maker-project-planner-vX.Y.apk
+   git commit -m "Add maker-project-planner-vX.Y.apk"
+   git push origin releases
+   git checkout main   # always switch back — ongoing work happens on main
+   ```
+   The `cp` must happen *before* `git checkout releases`, since checking
+   out a different branch can change what's on disk. Everything else
+   present in the working tree on that branch (node_modules/, android/,
+   ios/, etc.) is untracked *on this branch specifically* and harmless to
+   leave alone — never `git add -A`/`git clean` there, only ever add the
+   one new APK file by name.
+
+Both of these are in addition to, not instead of, installing the APK on
+the test phone via `adb install -r`.
 
 - **Versioning**: `vMAJOR.MINOR`, tracked here so a future session knows
   where to continue without re-deriving it from tags:
@@ -594,9 +620,7 @@ install -r`.
     workspaces + the Business Team tab). This is the *first* versioned
     release; earlier builds this session were installed directly via
     `adb install` with no formal release.
-- **File naming**: `maker-project-planner-vX.Y.apk` (the built file at
-  `android/app/build/outputs/apk/debug/app-debug.apk`, renamed/copied to
-  this pattern before attaching to the release).
+- **File naming**: `maker-project-planner-vX.Y.apk`.
 - **Tag/release title**: `vX.Y`, matching the file name's version.
 
 ## Git workflow
