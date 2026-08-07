@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Team &ndash; Maker Project Planner</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <main class="page">
+    <div id="loading" class="loading-state">
+      <span class="spinner" role="status" aria-label="Loading"></span>
+    </div>
+    <div id="no-business" class="container container--with-tabs" hidden>
+      <header class="dashboard-header">
+        <h1>Team</h1>
+      </header>
+      <p class="muted">Team is only available with a Business profile open.</p>
+      <a href="profile.html" class="btn">Go to Profile</a>
+    </div>
+    <div id="team" class="container container--with-tabs" hidden>
+      <header class="dashboard-header">
+        <h1>Team</h1>
+      </header>
+
+      <section class="card card--wide">
+        <h2>Your team</h2>
+        <ul id="team-list" class="projects-list"></ul>
+        <p id="team-error" class="error-text" role="alert"></p>
+      </section>
+
+      <section class="card card--wide">
+        <h2>Add to team</h2>
+        <p class="field-hint">Only people already on your friends list can be added.</p>
+        <ul id="team-add-list" class="projects-list"></ul>
+        <p id="team-add-error" class="error-text" role="alert"></p>
+      </section>
+
+      <section class="card card--wide">
+        <h2>Projects visible to your team</h2>
+        <p class="field-hint">Everyone on your team sees the same set of projects &mdash; toggle a project to share it with (or hide it from) the whole team.</p>
+        <ul id="team-projects-list" class="projects-list"></ul>
+        <p id="team-projects-error" class="error-text" role="alert"></p>
+      </section>
+    </div>
+  </main>
+  <nav class="tab-bar">
+    <a href="dashboard.html">Home</a>
+    <a href="friends.html">Friends</a>
+    <a href="team.html" class="tab--active">Team</a>
+    <a href="profile.html">Profile</a>
+  </nav>
+  <script type="module" src="js/team.js"></script>
+</body>
+</html>

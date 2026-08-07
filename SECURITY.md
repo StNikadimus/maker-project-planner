@@ -57,7 +57,9 @@ this project follows.
   with a `members/{uid}` document under that project (see below) — delete
   is owner-only, always. One more read grant: the owner's Education
   teacher, if any, can read (never write) the project — see
-  "Teacher read access" below.
+  "Teacher read access" below. `visibleToTeam` (the Business "Team" tab's
+  bulk-visibility flag) can only be changed by the project's owner, never
+  a collaborator — see "Business Team tab" below.
 - **`projects/{projectId}/steps/{stepId}`** — the same owner-or-member
   check as the parent project applies to its steps, plus the same
   read-only teacher grant: owner and members can read/add/check off steps,
@@ -76,6 +78,10 @@ this project follows.
   read it; the teacher (workspace owner) can read the whole roster and is
   the *only* one who can delete an entry — deleting it is what "release"
   means. No update.
+- **`workspaces/{workspaceId}/team/{uid}`** — the Business workspace's
+  team roster (see "Business Team tab" below). Owner-only create, and only
+  for someone already on the owner's friends list; owner-only delete; the
+  member themselves and the owner can both read an entry. No update.
 - **`teacherPins/{pin}`** — doc ID is the permanent 8-digit join code.
   Publicly readable by exact code (never listable) because signup needs to
   resolve one before an account — and therefore an auth token — exists.
@@ -197,6 +203,35 @@ same shape as the `studentOfTeacherUid` release clause on `users/{uid}`.
 No data is copied, moved, or deleted in any of this — the student owned
 their projects the whole time.
 
+## Business Team tab
+
+The Team tab (only shown while a Business workspace is active — a
+client-only check, see `CLAUDE.md`) lets the owner manage a team roster
+and pick which of their Business projects the whole team can see.
+**Deliberately not a new access-control primitive**: the
+`workspaces/{id}/team/{uid}` roster and each project's `visibleToTeam`
+flag are just a bulk-management layer over the *already-existing*
+per-project `members/{uid}` mechanism (the same one "Add a friend
+directly" on the Project page has always used). Adding someone to the
+team, or turning a project's `visibleToTeam` on, writes ordinary
+`members/{uid}` docs client-side via the existing friend-direct-add
+create rule (unchanged); removing someone, or turning `visibleToTeam`
+off, deletes those same docs via the existing owner-only delete rule
+(also unchanged). This means the actual project/step read rules needed
+**zero** changes for this feature — the only rule additions are the
+`team/{uid}` subcollection itself and one guard on the `projects` update
+rule so only the owner (never a collaborator) can flip `visibleToTeam`.
+
+By design (confirmed with the user, not assumed): visibility is
+**team-wide**, not configurable per person — one shared list of projects
+the whole team sees. Removing someone from the team **always fully
+revokes their access to every Business project** in that workspace,
+regardless of how they got access (team-granted or otherwise) — this is
+implemented client-side (`team.js`) as a query over the workspace's own
+projects (`ownerId`/`workspaceId`, both plain fields — safe for `list`,
+see the workspace-scoping section above) followed by a batched delete of
+that person's `members/{uid}` doc on each one.
+
 ## Automated rules test suite
 
 `firestore-tests/` contains an automated test suite (Node's built-in test
@@ -221,19 +256,23 @@ firebase emulators:exec --only firestore --project demo-maker-project-planner "n
 
 This starts a local Firestore emulator, runs the test suite against it, and
 shuts the emulator down afterward. No network calls to the real Firebase
-project are made. All 102 tests currently pass, including the invite/member
+project are made. All 115 tests currently pass, including the invite/member
 rules described above (single-use redemption, expiry, cross-user token
 misuse, self-only membership creation, the friend-direct-add shape), the
 username uniqueness rules (create-once-wins, public read, owner-only
 delete), the friends/friendRequests/blocked/reports rules (two-party
 create, block prevents new edges/requests, self-only inboxes, report is
-write-only for everyone including the reporter), and the workspaces/
+write-only for everyone including the reporter), the workspaces/
 teacherPins/students rules (workspace creation and the student-restriction
 check, PIN creation scoped to the owning teacher's own Education
 workspace, roster self-service and teacher-only release, workspace-scoped
 project creation with immutable `workspaceId`, the teacher's read-only
 grant into a linked student's projects/steps, and the release mechanic
-including that it stops the teacher's read access afterward).
+including that it stops the teacher's read access afterward), and the
+Business Team tab rules (owner-only team roster add/remove requiring
+friendship, business-only, a roster `list` test matching `team.js`'s real
+query, and that only the project owner — never a collaborator — can
+toggle `visibleToTeam`).
 
 ## App Check
 

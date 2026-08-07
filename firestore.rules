@@ -278,6 +278,38 @@ service cloud.firestore {
         allow delete: if request.auth != null
           && get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid;
       }
+
+      // The Business workspace's team roster. Doc ID = the member's own
+      // uid. Unlike students (self-service via PIN), this is entirely
+      // owner-driven — the owner adds/removes people directly, and only
+      // an existing friend can be added (same requirement as
+      // direct-add-to-project). This roster is purely a bulk-management
+      // list, not itself an access grant: actual project access is still
+      // just the ordinary projects/{id}/members/{uid} mechanism, written/
+      // deleted client-side alongside roster changes — see CLAUDE.md.
+      // $(workspaceId) is fixed for the whole query here (the client only
+      // ever lists one already-known workspace's own team subcollection),
+      // which is why this get() is safe for `list` — same reasoning as
+      // students/{uid} above, unlike the projects/{id} list gotcha
+      // documented below.
+      match /team/{uid} {
+        allow read: if request.auth != null
+          && (request.auth.uid == uid
+              || get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid);
+
+        allow create: if request.auth != null
+          && get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid
+          && get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.type == 'business'
+          && request.resource.data.keys().hasOnly(['uid', 'username', 'displayName', 'addedAt'])
+          && request.resource.data.uid == uid
+          && request.resource.data.addedAt == request.time
+          && isFriend(request.auth.uid, uid);
+
+        allow update: if false;
+
+        allow delete: if request.auth != null
+          && get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid;
+      }
     }
 
     // The doc ID *is* the 8-digit PIN — same "ID as the whole
@@ -321,15 +353,23 @@ service cloud.firestore {
       // release comment on the update rule below) — until then it stays
       // fixed at whatever it was when the project was created, matching
       // studentOfTeacherUid only ever being set once, at signup.
+      // visibleToTeam is always written explicitly (false on Personal/
+      // Education projects too — they just never toggle it) — see the
+      // Business "team" feature in CLAUDE.md > Security Principles. It's a
+      // pure bulk-management flag: toggling it doesn't grant access by
+      // itself, the client mirrors it into ordinary members/{uid} docs for
+      // the current team roster, using the create/delete rules already
+      // below — no new access-control logic needed here.
       allow create: if request.auth != null
         && request.auth.uid == request.resource.data.ownerId
-        && request.resource.data.keys().hasOnly(['name', 'category', 'ownerId', 'workspaceId', 'linkedTeacherUid', 'createdAt', 'updatedAt'])
+        && request.resource.data.keys().hasOnly(['name', 'category', 'ownerId', 'workspaceId', 'linkedTeacherUid', 'visibleToTeam', 'createdAt', 'updatedAt'])
         && request.resource.data.name is string
         && request.resource.data.name.size() > 0
         && request.resource.data.category == 'diy'
         && (request.resource.data.workspaceId == request.auth.uid
             || get(/databases/$(database)/documents/workspaces/$(request.resource.data.workspaceId)).data.ownerId == request.auth.uid)
         && request.resource.data.linkedTeacherUid == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('studentOfTeacherUid', null)
+        && request.resource.data.visibleToTeam is bool
         && request.resource.data.createdAt == request.time
         && request.resource.data.updatedAt == request.time;
 
@@ -372,6 +412,11 @@ service cloud.firestore {
             && request.resource.data.workspaceId == resource.data.workspaceId
             && request.resource.data.category == resource.data.category
             && request.resource.data.get('linkedTeacherUid', null) == resource.data.get('linkedTeacherUid', null)
+            // Only the owner can flip visibleToTeam — a collaborator can
+            // update other fields (e.g. steps live elsewhere, but nothing
+            // stops a member renaming the project today) but not this one.
+            && (request.resource.data.get('visibleToTeam', false) == resource.data.get('visibleToTeam', false)
+                || request.auth.uid == resource.data.ownerId)
             && request.resource.data.updatedAt == request.time
           // The release-time cascade: the teacher currently denormalized
           // onto this project may clear (only) linkedTeacherUid — nothing

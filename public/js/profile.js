@@ -21,6 +21,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 import { auth, db } from "./firebase-init.js";
 import { formatAuthError } from "./auth-errors.js";
+import { isBusinessWorkspaceActive } from "./active-workspace.js";
 
 const USERNAME_PATTERN = /^[a-z][a-z0-9_]{2,19}$/;
 const MAX_PIN_ATTEMPTS = 5;
@@ -57,6 +58,7 @@ const educationOpenEl = document.getElementById("education-open");
 const openEducationBtn = document.getElementById("open-education-btn");
 const teacherPinDisplayEl = document.getElementById("teacher-pin-display");
 const workspaceErrorEl = document.getElementById("workspace-error");
+const teamTabEl = document.getElementById("team-tab");
 
 let userData = null;
 
@@ -89,6 +91,7 @@ function renderAccount() {
 async function renderWorkspaces() {
   const isStudent = !!userData.studentOfTeacherUid;
   studentNoteEl.hidden = !isStudent;
+  teamTabEl.hidden = !isBusinessWorkspaceActive(auth.currentUser.uid, userData.businessWorkspaceId);
 
   const hasBusiness = !!userData.businessWorkspaceId;
   businessClosedEl.hidden = hasBusiness || isStudent;

@@ -21,6 +21,7 @@ const newProjectData = (ownerId, workspaceId = ownerId, linkedTeacherUid = null)
   ownerId,
   workspaceId,
   linkedTeacherUid,
+  visibleToTeam: false,
   createdAt: serverTimestamp(),
   updatedAt: serverTimestamp(),
 });
@@ -85,6 +86,7 @@ async function seedProject(id = "project1", overrides = {}) {
       ownerId: OWNER_UID,
       workspaceId: OWNER_UID,
       linkedTeacherUid: null,
+      visibleToTeam: false,
       createdAt: new Date(),
       updatedAt: new Date(),
       ...overrides,
@@ -116,6 +118,18 @@ async function seedRosterEntry(workspaceId, uid, overrides = {}) {
       username: `${uid}-username`,
       displayName: `${uid}-name`,
       joinedAt: new Date(),
+      ...overrides,
+    });
+  });
+}
+
+async function seedTeamEntry(workspaceId, uid, overrides = {}) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "workspaces", workspaceId, "team", uid), {
+      uid,
+      username: `${uid}-username`,
+      displayName: `${uid}-name`,
+      addedAt: new Date(),
       ...overrides,
     });
   });
@@ -1028,6 +1042,136 @@ describe("workspaces/{workspaceId}/students/{uid}", () => {
     await seedRosterEntry("ws1", STUDENT_UID);
     await assertFails(deleteDoc(doc(studentDb(), "workspaces", "ws1", "students", STUDENT_UID)));
     await assertSucceeds(deleteDoc(doc(teacherDb(), "workspaces", "ws1", "students", STUDENT_UID)));
+  });
+});
+
+describe("workspaces/{workspaceId}/team/{uid}", () => {
+  it("the owner can add an existing friend to the team", async () => {
+    await seedWorkspace("wsbiz", { ownerId: OWNER_UID, type: "business" });
+    await seedFriendEdge(OWNER_UID, OTHER_UID);
+    await assertSucceeds(
+      setDoc(doc(ownerDb(), "workspaces", "wsbiz", "team", OTHER_UID), {
+        uid: OTHER_UID,
+        username: "other1",
+        displayName: "Other",
+        addedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("cannot add someone who isn't a friend", async () => {
+    await seedWorkspace("wsbiz", { ownerId: OWNER_UID, type: "business" });
+    await assertFails(
+      setDoc(doc(ownerDb(), "workspaces", "wsbiz", "team", OTHER_UID), {
+        uid: OTHER_UID,
+        username: "other1",
+        displayName: "Other",
+        addedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("a non-owner cannot add anyone to someone else's team", async () => {
+    await seedWorkspace("wsbiz", { ownerId: OWNER_UID, type: "business" });
+    await seedFriendEdge(MEMBER_UID, OTHER_UID);
+    await assertFails(
+      setDoc(doc(memberDb(), "workspaces", "wsbiz", "team", OTHER_UID), {
+        uid: OTHER_UID,
+        username: "other1",
+        displayName: "Other",
+        addedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("cannot add to the team of a non-business (education) workspace", async () => {
+    await seedWorkspace("wsedu", { ownerId: OWNER_UID, type: "education", teacherPin: "12345678" });
+    await seedFriendEdge(OWNER_UID, OTHER_UID);
+    await assertFails(
+      setDoc(doc(ownerDb(), "workspaces", "wsedu", "team", OTHER_UID), {
+        uid: OTHER_UID,
+        username: "other1",
+        displayName: "Other",
+        addedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("the owner can read the full team roster; a stranger cannot", async () => {
+    await seedWorkspace("wsbiz", { ownerId: OWNER_UID, type: "business" });
+    await seedTeamEntry("wsbiz", OTHER_UID);
+    await assertSucceeds(getDoc(doc(ownerDb(), "workspaces", "wsbiz", "team", OTHER_UID)));
+    await assertFails(getDoc(doc(memberDb(), "workspaces", "wsbiz", "team", OTHER_UID)));
+  });
+
+  it("a team member can read their own entry", async () => {
+    await seedWorkspace("wsbiz", { ownerId: OWNER_UID, type: "business" });
+    await seedTeamEntry("wsbiz", OTHER_UID);
+    await assertSucceeds(getDoc(doc(otherDb(), "workspaces", "wsbiz", "team", OTHER_UID)));
+  });
+
+  it("the owner can list the whole team roster (team.js's watchTeam)", async () => {
+    await seedWorkspace("wsbiz", { ownerId: OWNER_UID, type: "business" });
+    await seedTeamEntry("wsbiz", OTHER_UID);
+    await seedTeamEntry("wsbiz", MEMBER_UID);
+    const snap = await assertSucceeds(getDocs(collection(ownerDb(), "workspaces", "wsbiz", "team")));
+    if (snap.size !== 2) throw new Error(`expected 2 results, got ${snap.size}`);
+  });
+
+  it("only the owner can remove someone from the team", async () => {
+    await seedWorkspace("wsbiz", { ownerId: OWNER_UID, type: "business" });
+    await seedTeamEntry("wsbiz", OTHER_UID);
+    await assertFails(deleteDoc(doc(otherDb(), "workspaces", "wsbiz", "team", OTHER_UID)));
+    await assertSucceeds(deleteDoc(doc(ownerDb(), "workspaces", "wsbiz", "team", OTHER_UID)));
+  });
+
+  it("a team roster entry cannot be updated", async () => {
+    await seedWorkspace("wsbiz", { ownerId: OWNER_UID, type: "business" });
+    await seedTeamEntry("wsbiz", OTHER_UID);
+    await assertFails(
+      updateDoc(doc(ownerDb(), "workspaces", "wsbiz", "team", OTHER_UID), { displayName: "Renamed" })
+    );
+  });
+});
+
+describe("projects/{projectId} visibleToTeam", () => {
+  it("visibleToTeam must be a boolean on create", async () => {
+    await seedUser(OWNER_UID);
+    await assertFails(
+      setDoc(doc(ownerDb(), "projects", "p1"), {
+        name: "Birdhouse",
+        category: "diy",
+        ownerId: OWNER_UID,
+        workspaceId: OWNER_UID,
+        linkedTeacherUid: null,
+        visibleToTeam: "yes",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("the owner can toggle visibleToTeam", async () => {
+    await seedProject("project1", { visibleToTeam: false });
+    await assertSucceeds(
+      updateDoc(doc(ownerDb(), "projects", "project1"), { visibleToTeam: true, updatedAt: serverTimestamp() })
+    );
+  });
+
+  it("a member cannot toggle visibleToTeam", async () => {
+    await seedProject("project1", { visibleToTeam: false });
+    await seedMember("project1", MEMBER_UID);
+    await assertFails(
+      updateDoc(doc(memberDb(), "projects", "project1"), { visibleToTeam: true, updatedAt: serverTimestamp() })
+    );
+  });
+
+  it("a member can still update other fields as long as visibleToTeam is unchanged", async () => {
+    await seedProject("project1", { visibleToTeam: false });
+    await seedMember("project1", MEMBER_UID);
+    await assertSucceeds(
+      updateDoc(doc(memberDb(), "projects", "project1"), { name: "Treehouse", updatedAt: serverTimestamp() })
+    );
   });
 });
 

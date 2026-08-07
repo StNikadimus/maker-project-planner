@@ -75,8 +75,12 @@ Project page at any time.
 Every account can additionally open a **Business** and/or an
 **Education** profile from the Profile tab — fully separate project
 workspaces from Personal, switchable via a dropdown at the top of the
-dashboard. Business's "team" is just the existing Friends system, reused
-as-is. Education gives the opener (the teacher) a permanent 8-digit PIN;
+dashboard. While a Business profile is active, a **Team** tab appears in
+the bottom tab bar: the owner adds/removes people (must already be
+friends) from a team roster and picks which of their Business projects
+the whole team can see — see Security Principles for how this reuses the
+existing collaborator mechanism rather than being a new access-control
+system. Education gives the opener (the teacher) a permanent 8-digit PIN;
 new signups can enter a teacher's PIN to link their account to that
 teacher's class, which lets the teacher see (read-only) that student's
 projects from their dashboard's "My Students" section. A teacher can
@@ -143,6 +147,11 @@ workspaces/{workspaceId}/students/{uid}   // education only, teacher's roster
   username, displayName: denormalized snapshot of the student
   joinedAt: timestamp
 
+workspaces/{workspaceId}/team/{uid}   // business only, owner-managed roster
+  uid: uid
+  username, displayName: denormalized snapshot of the team member
+  addedAt: timestamp
+
 teacherPins/{pin}                 // doc ID *is* the 8-digit PIN itself
   workspaceId: string
   teacherUid: uid
@@ -156,6 +165,9 @@ projects/{projectId}
   linkedTeacherUid: uid | null  // denormalized copy of the owner's
                                  // studentOfTeacherUid *at creation time* —
                                  // see Security Principles for why
+  visibleToTeam: boolean    // business "team" bulk-visibility flag; always
+                             // written (false) even on Personal/Education
+                             // projects — see Security Principles
   createdAt, updatedAt: timestamp
 
 projects/{projectId}/steps/{stepId}
@@ -340,6 +352,35 @@ a `redeemInvite` Cloud Function. See Security Principles below for why, and
   the viewer is neither the project's owner nor a `members/{uid}` —
   distinguishing that from "has read access via being the teacher"
   requires one extra `getDoc` on the viewer's own membership doc.
+- **Business "Team" tab (decided 2026-08-07)**: appears in the bottom tab
+  bar only while the Business workspace is active (a client-only check —
+  `active-workspace.js` compares the `activeWorkspace:{uid}` localStorage
+  key to `users/{uid}.businessWorkspaceId` — reused across
+  `dashboard.js`/`friends.js`/`profile.js`/`team.js` since it's the same
+  four lines in each). Confirmed with the user: project visibility is
+  **team-wide** (one shared list of projects, not configurable per
+  person), and removing someone from the team **immediately revokes their
+  access to every Business project**, not just the ones the team roster
+  granted. The team roster (`workspaces/{id}/team/{uid}`, owner-only
+  add/remove, target must already be a friend — same `isFriend()`
+  requirement as direct-add-to-project) is deliberately **not itself an
+  access grant** — it's a bulk-management layer over the *existing*
+  per-project `members/{uid}` mechanism, which is entirely unchanged.
+  Projects gain `visibleToTeam: boolean` (the owner-only toggle); the
+  client (`team.js`) mirrors team-roster and visibility changes into
+  ordinary `members/{uid}` create/delete batches — add-to-team grants
+  access to every currently-`visibleToTeam` project, remove-from-team
+  revokes access to every project in the workspace, toggling a project's
+  `visibleToTeam` grants/revokes it for the whole current roster. No new
+  project/steps *read* rule logic exists because of this — the only rule
+  changes are the `team/{uid}` subcollection itself and one added guard
+  (`visibleToTeam` can only be changed by the project's owner, not a
+  collaborator). The `team/{uid}` read rule's `get(workspaces/$(workspaceId))`
+  call is safe for `list` because, unlike the `projects` list-safety bug
+  fixed earlier the same day, `$(workspaceId)` here is *fixed* for the
+  whole query (the client only ever lists one already-known workspace's
+  own subcollection) — same reasoning that already made the `students`
+  roster listing and `isTeacherOfProject()` safe.
 - **Profile pictures were built, then deliberately dropped, 2026-08-06.**
   A working version existed (Cloud Storage upload, `storage.rules`,
   `profile.js` upload UI) but Storage had never been enabled on this
@@ -531,6 +572,32 @@ terminal hits the same problem.
    ```
    FIREBASE_TOKEN="<pasted token>" npx firebase-tools deploy --only hosting,firestore --token "$FIREBASE_TOKEN"
    ```
+
+## App releases (APK on GitHub)
+
+**Decided 2026-08-07, standing instruction for every future APK build**:
+whenever a new debug APK is built and ready for the user to test, publish
+it as a GitHub Release with the APK attached (`gh release create <tag>
+<apk-path> --title <tag> --notes "..."` — `gh` is already authenticated in
+this environment, see Git workflow below for the same account). This is
+in addition to, not instead of, installing it on the test phone via `adb
+install -r`.
+
+- **Versioning**: `vMAJOR.MINOR`, tracked here so a future session knows
+  where to continue without re-deriving it from tags:
+  - Bump **MINOR** for a normal build (bug fixes, small features):
+    v1.0 → v1.1 → v1.2 → v1.3 …
+  - Bump **MAJOR** (reset MINOR to 0) only for a genuinely big new
+    feature — the user's own judgment call each time, not a fixed rule
+    (e.g. v1.3 → v2.0).
+  - **Current version: v1.0** (2026-08-07 — Business/Education
+    workspaces + the Business Team tab). This is the *first* versioned
+    release; earlier builds this session were installed directly via
+    `adb install` with no formal release.
+- **File naming**: `maker-project-planner-vX.Y.apk` (the built file at
+  `android/app/build/outputs/apk/debug/app-debug.apk`, renamed/copied to
+  this pattern before attaching to the release).
+- **Tag/release title**: `vX.Y`, matching the file name's version.
 
 ## Git workflow
 
@@ -741,6 +808,21 @@ successful build. Status as of 2026-08-05:
   state issue. The user is restarting the phone and retesting, per the
   same recovery step that worked last time — pick this up from their
   findings rather than assuming either cause.
+- **2026-08-07, WebView-state theory confirmed**: the user restarted the
+  phone and reported everything working correctly afterward, including
+  QR-add and friend requests — so that was in fact a recurrence of the
+  same WebView-level degradation documented earlier in this file, not a
+  code bug. Worth remembering if friend-related features ever seem to
+  mysteriously stop working again on this same test phone.
+- **2026-08-07, Business "Team" tab**: implemented per the design in
+  Security Principles above — `firestore.rules` (`team/{uid}` roster,
+  `visibleToTeam` on projects), `active-workspace.js` (new shared helper),
+  `team.html`/`team.js` (new page), and the Team tab wired into
+  `dashboard.js`/`friends.js`/`profile.js`. Rules test suite green at
+  **115 tests**. Deployed and live-smoke-tested the same way as the
+  workspace bugs earlier today — see the test output/verification notes
+  in the session this was built, or just trust the deploy timestamp and
+  re-verify if anything about the Team tab seems off.
 - **Phase 7 — AI step-time estimation**: not started. Needs a Cloud
   Function to call the Claude API without exposing the key client-side —
   will hit the same Blaze-plan wall as Phase 5 did. Raise that tradeoff

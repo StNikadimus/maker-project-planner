@@ -14,6 +14,7 @@ import {
   serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 import { auth, db } from "./firebase-init.js";
+import { isBusinessWorkspaceActive } from "./active-workspace.js";
 
 const loadingEl = document.getElementById("loading");
 const dashboardEl = document.getElementById("dashboard");
@@ -28,6 +29,7 @@ const workspaceSelectEl = document.getElementById("workspace-select");
 const studentsSectionEl = document.getElementById("students-section");
 const studentsListEl = document.getElementById("students-list");
 const studentsErrorEl = document.getElementById("students-error");
+const teamTabEl = document.getElementById("team-tab");
 
 let unsubscribeOwned = null;
 let unsubscribeShared = null;
@@ -112,6 +114,7 @@ workspaceSelectEl.addEventListener("change", () => {
 function refreshForWorkspace() {
   watchOwnedProjects();
   watchStudents();
+  teamTabEl.hidden = !isBusinessWorkspaceActive(currentUser.uid, userData.businessWorkspaceId);
 }
 
 function watchOwnedProjects() {
@@ -335,6 +338,7 @@ projectForm.addEventListener("submit", async (event) => {
       ownerId: auth.currentUser.uid,
       workspaceId: activeWorkspaceId,
       linkedTeacherUid: userData.studentOfTeacherUid ?? null,
+      visibleToTeam: false,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });

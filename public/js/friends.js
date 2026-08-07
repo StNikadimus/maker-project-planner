@@ -18,6 +18,7 @@ import {
   serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 import { auth, db } from "./firebase-init.js";
+import { isBusinessWorkspaceActive } from "./active-workspace.js";
 import QRCode from "https://cdn.jsdelivr.net/npm/qrcode@1.5.4/+esm";
 
 const loadingEl = document.getElementById("loading");
@@ -44,6 +45,7 @@ const qrErrorEl = document.getElementById("qr-error");
 
 const friendsListEl = document.getElementById("friends-list");
 const friendsErrorEl = document.getElementById("friends-error");
+const teamTabEl = document.getElementById("team-tab");
 
 let userData = null;
 let unsubscribeRequests = null;
@@ -67,6 +69,7 @@ onAuthStateChanged(auth, async (user) => {
     console.error(err);
     userData = { displayName: user.email, username: "", email: user.email, photoURL: null };
   }
+  teamTabEl.hidden = !isBusinessWorkspaceActive(user.uid, userData.businessWorkspaceId);
 
   unsubscribeRequests = onSnapshot(
     collection(db, "users", user.uid, "friendRequests"),
