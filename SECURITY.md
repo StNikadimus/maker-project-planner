@@ -10,7 +10,15 @@ this project follows.
 - **`users/{userId}`** — a signed-in user can only read or write their own
   profile document, including deleting it (used by the "delete profile"
   flow in the Profile tab). No one can read, write, or delete anyone else's
-  profile.
+  profile. Two fields are a deliberate exception to "only the owner writes
+  their own doc": `businessWorkspaceId`/`teacherWorkspaceId` can each only
+  be *set once, from null* (opening a Business or Education workspace), and
+  a linked student's `studentOfTeacherUid`/`studentOfWorkspaceId` can be
+  cleared — and only those two fields, together, to null — by the teacher
+  currently named in `studentOfTeacherUid`. That second clause is the
+  entire "release a student" mechanic (see Workspaces below): it's a
+  narrow, explicit carve-out, not a general "teachers can edit students"
+  rule.
 - **`usernames/{username}`** — the doc ID *is* the unique, lowercase
   username, same "ID as the access-control mechanism" pattern as invites
   below. Anyone (even signed out) can `read` one exact, already-guessed
@@ -41,12 +49,38 @@ this project follows.
   (`reporterUid` must match the caller). No read access for anyone,
   including the reporter — intentionally minimal for now, see `CLAUDE.md`.
 - **`projects/{projectId}`** — a signed-in user can only create a project
-  they own (`ownerId` must be their own uid). Read and update are allowed
-  for the owner **and** anyone with a `members/{uid}` document under that
-  project (see below) — delete is owner-only, always.
+  they own (`ownerId` must be their own uid) and it must carry a
+  `workspaceId` that's either their own uid (the Personal workspace, no
+  `workspaces/{id}` doc needed) or a `workspaces/{id}` they actually own
+  (Business/Education) — see Workspaces below. `workspaceId` is immutable
+  after creation. Read and update are allowed for the owner **and** anyone
+  with a `members/{uid}` document under that project (see below) — delete
+  is owner-only, always. One more read grant: the owner's Education
+  teacher, if any, can read (never write) the project — see
+  "Teacher read access" below.
 - **`projects/{projectId}/steps/{stepId}`** — the same owner-or-member
-  check as the parent project applies to its steps: owner and members can
-  read/add/check off steps, but only the owner can delete a step.
+  check as the parent project applies to its steps, plus the same
+  read-only teacher grant: owner and members can read/add/check off steps,
+  but only the owner can delete a step, and a linked teacher can read but
+  never write.
+- **`workspaces/{workspaceId}`** — a Business or Education "profile" is
+  really just a separate project workspace; see "Business/Education
+  workspaces" below for the full model. Only the owner can read their own
+  workspace doc; create requires the caller to not currently be someone
+  else's linked student (the mandatory "students can't open their own
+  Business/Education profile" rule); no update or delete — a workspace,
+  once opened, is permanent.
+- **`workspaces/{workspaceId}/students/{uid}`** — the teacher's class
+  roster. A student can create their own entry (self-service — reaching
+  this point already required knowing the teacher's PIN, see below) and
+  read it; the teacher (workspace owner) can read the whole roster and is
+  the *only* one who can delete an entry — deleting it is what "release"
+  means. No update.
+- **`teacherPins/{pin}`** — doc ID is the permanent 8-digit join code.
+  Publicly readable by exact code (never listable) because signup needs to
+  resolve one before an account — and therefore an auth token — exists.
+  Only the workspace's own owner can create the PIN doc for their
+  Education workspace; no update or delete.
 - **`projects/{projectId}/invites/{token}`** — this is how sharing works
   without a Cloud Function (see "Invite mechanism" below for the full
   explanation). Only the project owner can create one. No one — not even
@@ -102,6 +136,67 @@ but membership wasn't granted — the owner would need to issue a fresh
 invite. This is a UX rough edge, not a security hole: it cannot be used to
 gain unauthorized access, only to "waste" a single invite link.
 
+## Business / Education workspaces
+
+A Business or Education "profile" (opened from the Profile tab) is a
+**fully separate project workspace**, not a relabeled view of the same
+projects — see `CLAUDE.md` for the product-level design. Each user can
+open at most one of each, enforced by `businessWorkspaceId`/
+`teacherWorkspaceId` on their own `users/{uid}` doc only being settable
+once, from null.
+
+**Education join codes work like invite links, deliberately.** A teacher's
+8-digit PIN (`teacherPins/{pin}`, doc ID = the PIN itself) is the same
+"ID as the whole access-control mechanism" pattern as invite tokens: it's
+never listable, only readable by exact, already-known code, and it's
+publicly readable (not just signed-in) because a brand-new signup needs to
+resolve it *before* an account exists. **Accepted tradeoff**: unlike an
+invite token (a random UUID), an 8-digit numeric PIN is small enough to be
+brute-forceable in principle, and there's no rate-limiting on read
+attempts — that would need a Cloud Function, which hits the same Blaze-plan
+wall documented in `CLAUDE.md`. This is the same security level as a
+typical classroom join code (Kahoot/Google Classroom-style) and was a
+deliberate, informed choice, not an oversight.
+
+**Teacher access to a student's work is read-only and non-destructive by
+design.** A linked student's projects and steps never move — they stay in
+the student's own Personal workspace the whole time. The `steps` read
+grant is `isTeacherOfProject()` in `firestore.rules`, a `get()`-based
+check against the student's own `studentOfTeacherUid` field — this works
+for both `get` and `list` because the `get()` path it builds only depends
+on the fixed `projectId` path segment, never on a step's own data. The
+`projects` read grant is different: a `get()` the same shape as
+`isTeacherOfProject()` works for opening one specific project by ID, but
+Firestore silently fails a `list`/query whenever a rule's `get()` path is
+built from a *candidate document's own field* (confirmed empirically,
+2026-08-07, from a live bug report — see `CLAUDE.md`'s Firestore rules
+gotchas for the full writeup) — exactly what listing "every project this
+teacher's student owns" needs. The fix is a denormalized
+`linkedTeacherUid` field directly on `projects/{id}` (a copy of the
+owner's `studentOfTeacherUid` *at creation time*), so the `list` rule is a
+plain field comparison with no `get()` at all. `get` and `list` are
+separate rule bodies for `projects` specifically because of this (`allow
+get: ...` keeps the owner/member/teacher `get()`-based check; `allow
+list: ...` only ever needs owner and `linkedTeacherUid`, both plain field
+comparisons). A teacher can never create, update, or delete a student's
+project or steps, with one narrow exception (see release, next).
+
+**"Release" clears the student's link, then cascades to their projects.**
+The teacher clears `studentOfTeacherUid`/`studentOfWorkspaceId` (both
+together, no other field) on the student's own `users/{uid}` doc, deletes
+the roster entry at `workspaces/{teacherWorkspaceId}/students/{uid}` —
+and now (as of the `linkedTeacherUid` fix above) additionally queries and
+batch-clears `linkedTeacherUid` on every one of that student's projects
+it was ever set on, since that field doesn't track the live
+`studentOfTeacherUid` value the way the old `get()`-based check did —
+without this cascade, the teacher would keep read access to old projects
+forever. The rule allowing this is deliberately the narrowest possible
+grant: the teacher currently named in a project's own `linkedTeacherUid`
+may update *that exact field to null and nothing else* — mirroring the
+same shape as the `studentOfTeacherUid` release clause on `users/{uid}`.
+No data is copied, moved, or deleted in any of this — the student owned
+their projects the whole time.
+
 ## Automated rules test suite
 
 `firestore-tests/` contains an automated test suite (Node's built-in test
@@ -126,13 +221,19 @@ firebase emulators:exec --only firestore --project demo-maker-project-planner "n
 
 This starts a local Firestore emulator, runs the test suite against it, and
 shuts the emulator down afterward. No network calls to the real Firebase
-project are made. All 64 tests currently pass, including the invite/member
+project are made. All 102 tests currently pass, including the invite/member
 rules described above (single-use redemption, expiry, cross-user token
 misuse, self-only membership creation, the friend-direct-add shape), the
 username uniqueness rules (create-once-wins, public read, owner-only
-delete), and the friends/friendRequests/blocked/reports rules (two-party
+delete), the friends/friendRequests/blocked/reports rules (two-party
 create, block prevents new edges/requests, self-only inboxes, report is
-write-only for everyone including the reporter).
+write-only for everyone including the reporter), and the workspaces/
+teacherPins/students rules (workspace creation and the student-restriction
+check, PIN creation scoped to the owning teacher's own Education
+workspace, roster self-service and teacher-only release, workspace-scoped
+project creation with immutable `workspaceId`, the teacher's read-only
+grant into a linked student's projects/steps, and the release mechanic
+including that it stops the teacher's read access afterward).
 
 ## App Check
 

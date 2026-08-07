@@ -3,20 +3,24 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { initializeTestEnvironment, assertSucceeds, assertFails } from "@firebase/rules-unit-testing";
-import { doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, collectionGroup, query, where, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, writeBatch, collection, collectionGroup, query, where, serverTimestamp } from "firebase/firestore";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const OWNER_UID = "owner-uid";
 const OTHER_UID = "other-uid";
 const MEMBER_UID = "member-uid";
+const TEACHER_UID = "teacher-uid";
+const STUDENT_UID = "student-uid";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const newProjectData = (ownerId) => ({
+const newProjectData = (ownerId, workspaceId = ownerId, linkedTeacherUid = null) => ({
   name: "Birdhouse",
   category: "diy",
   ownerId,
+  workspaceId,
+  linkedTeacherUid,
   createdAt: serverTimestamp(),
   updatedAt: serverTimestamp(),
 });
@@ -63,20 +67,84 @@ function otherDb() {
 function memberDb() {
   return testEnv.authenticatedContext(MEMBER_UID, { email: "member@example.com" }).firestore();
 }
+function teacherDb() {
+  return testEnv.authenticatedContext(TEACHER_UID, { email: "teacher@example.com" }).firestore();
+}
+function studentDb() {
+  return testEnv.authenticatedContext(STUDENT_UID, { email: "student@example.com" }).firestore();
+}
 function anonDb() {
   return testEnv.unauthenticatedContext().firestore();
 }
 
-async function seedProject(id = "project1") {
+async function seedProject(id = "project1", overrides = {}) {
   await testEnv.withSecurityRulesDisabled(async (context) => {
     await setDoc(doc(context.firestore(), "projects", id), {
       name: "Birdhouse",
       category: "diy",
       ownerId: OWNER_UID,
+      workspaceId: OWNER_UID,
+      linkedTeacherUid: null,
       createdAt: new Date(),
       updatedAt: new Date(),
+      ...overrides,
     });
   });
+}
+
+async function seedWorkspace(id, overrides = {}) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "workspaces", id), {
+      type: "business",
+      ownerId: TEACHER_UID,
+      createdAt: new Date(),
+      ...overrides,
+    });
+  });
+}
+
+async function seedTeacherPin(pin, workspaceId, teacherUid = TEACHER_UID) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "teacherPins", pin), { workspaceId, teacherUid });
+  });
+}
+
+async function seedRosterEntry(workspaceId, uid, overrides = {}) {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "workspaces", workspaceId, "students", uid), {
+      uid,
+      username: `${uid}-username`,
+      displayName: `${uid}-name`,
+      joinedAt: new Date(),
+      ...overrides,
+    });
+  });
+}
+
+async function seedUser(uid, overrides = {}) {
+  // Username must match isValidUsername's pattern (lowercase letters/digits/
+  // underscores only, no hyphens) since the users/{userId} update rule
+  // re-validates the merged document's username on every self-update, even
+  // when username itself isn't the field being changed.
+  const validUsername = uid.replace(/-/g, "").slice(0, 20);
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "users", uid), {
+      displayName: `${uid}-name`,
+      username: validUsername,
+      email: `${uid}@example.com`,
+      createdAt: new Date(),
+      photoURL: null,
+      businessWorkspaceId: null,
+      teacherWorkspaceId: null,
+      studentOfTeacherUid: null,
+      studentOfWorkspaceId: null,
+      ...overrides,
+    });
+  });
+}
+
+async function seedLinkedStudent(studentUid, teacherUid, workspaceId) {
+  await seedUser(studentUid, { studentOfTeacherUid: teacherUid, studentOfWorkspaceId: workspaceId });
 }
 
 async function seedStep(projectId = "project1", stepId = "step1") {
@@ -281,6 +349,7 @@ describe("usernames/{username}", () => {
 
 describe("projects/{projectId}", () => {
   it("owner can create their own project", async () => {
+    await seedUser(OWNER_UID);
     await assertSucceeds(setDoc(doc(ownerDb(), "projects", "p1"), newProjectData(OWNER_UID)));
   });
 
@@ -802,6 +871,379 @@ describe("reports/{reportId}", () => {
         reason: "spam",
         createdAt: serverTimestamp(),
       })
+    );
+  });
+});
+
+describe("users/{userId} self-update: business/teacher workspace fields", () => {
+  it("can set businessWorkspaceId once, from null", async () => {
+    await seedUser(OWNER_UID);
+    await assertSucceeds(updateDoc(doc(ownerDb(), "users", OWNER_UID), { businessWorkspaceId: "ws1" }));
+  });
+
+  it("cannot change businessWorkspaceId once already set", async () => {
+    await seedUser(OWNER_UID, { businessWorkspaceId: "ws1" });
+    await assertFails(updateDoc(doc(ownerDb(), "users", OWNER_UID), { businessWorkspaceId: "ws2" }));
+  });
+});
+
+describe("workspaces/{workspaceId}", () => {
+  it("a user can open a Business workspace for themselves", async () => {
+    await seedUser(TEACHER_UID);
+    await assertSucceeds(
+      setDoc(doc(teacherDb(), "workspaces", "ws1"), {
+        type: "business",
+        ownerId: TEACHER_UID,
+        createdAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("a pre-existing account whose profile doc predates this feature (no studentOfTeacherUid key at all) can still open a Business workspace", async () => {
+    // Caught by a real user on a live account, not this suite: a profile
+    // doc created before 2026-08-06 has no studentOfTeacherUid key at all,
+    // and the create rule's plain `.data.studentOfTeacherUid` access threw
+    // instead of treating a missing key as unset, denying every "Open
+    // Business/Education profile" click for that account. Reproduces the
+    // exact old-shape doc (only the fields signup.js wrote before this
+    // feature existed) rather than using seedUser(), which always writes
+    // the full modern field set and would never have caught this.
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "users", TEACHER_UID), {
+        displayName: "Gozdne",
+        username: "gozd",
+        email: "teacher-uid@example.com",
+        createdAt: new Date(),
+        photoURL: null,
+      });
+    });
+    await assertSucceeds(
+      setDoc(doc(teacherDb(), "workspaces", "ws1"), {
+        type: "business",
+        ownerId: TEACHER_UID,
+        createdAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("a user can open an Education workspace with a valid 8-digit PIN", async () => {
+    await seedUser(TEACHER_UID);
+    await assertSucceeds(
+      setDoc(doc(teacherDb(), "workspaces", "ws1"), {
+        type: "education",
+        ownerId: TEACHER_UID,
+        createdAt: serverTimestamp(),
+        teacherPin: "12345678",
+      })
+    );
+  });
+
+  it("cannot open an Education workspace with a PIN that isn't exactly 8 digits", async () => {
+    await seedUser(TEACHER_UID);
+    await assertFails(
+      setDoc(doc(teacherDb(), "workspaces", "ws1"), {
+        type: "education",
+        ownerId: TEACHER_UID,
+        createdAt: serverTimestamp(),
+        teacherPin: "123",
+      })
+    );
+  });
+
+  it("cannot create a workspace claiming someone else as owner", async () => {
+    await seedUser(OTHER_UID);
+    await assertFails(
+      setDoc(doc(otherDb(), "workspaces", "ws1"), {
+        type: "business",
+        ownerId: TEACHER_UID,
+        createdAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("a linked student cannot open a Business or Education workspace of their own", async () => {
+    await seedLinkedStudent(STUDENT_UID, TEACHER_UID, "ws-teacher");
+    await assertFails(
+      setDoc(doc(studentDb(), "workspaces", "ws2"), {
+        type: "business",
+        ownerId: STUDENT_UID,
+        createdAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("the owner can read their own workspace; another user cannot", async () => {
+    await seedWorkspace("ws1", { ownerId: TEACHER_UID, type: "business" });
+    await assertSucceeds(getDoc(doc(teacherDb(), "workspaces", "ws1")));
+    await assertFails(getDoc(doc(otherDb(), "workspaces", "ws1")));
+  });
+
+  it("a workspace can never be updated or deleted", async () => {
+    await seedWorkspace("ws1", { ownerId: TEACHER_UID, type: "business" });
+    await assertFails(updateDoc(doc(teacherDb(), "workspaces", "ws1"), { type: "education" }));
+    await assertFails(deleteDoc(doc(teacherDb(), "workspaces", "ws1")));
+  });
+});
+
+describe("workspaces/{workspaceId}/students/{uid}", () => {
+  it("a student can create their own roster doc", async () => {
+    await seedWorkspace("ws1", { ownerId: TEACHER_UID, type: "education", teacherPin: "12345678" });
+    await assertSucceeds(
+      setDoc(doc(studentDb(), "workspaces", "ws1", "students", STUDENT_UID), {
+        uid: STUDENT_UID,
+        username: "student1",
+        displayName: "Student",
+        joinedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("cannot create a roster doc for someone else", async () => {
+    await seedWorkspace("ws1", { ownerId: TEACHER_UID, type: "education", teacherPin: "12345678" });
+    await assertFails(
+      setDoc(doc(studentDb(), "workspaces", "ws1", "students", OTHER_UID), {
+        uid: OTHER_UID,
+        username: "other1",
+        displayName: "Other",
+        joinedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("the teacher (workspace owner) can read the full roster; a stranger cannot", async () => {
+    await seedWorkspace("ws1", { ownerId: TEACHER_UID, type: "education", teacherPin: "12345678" });
+    await seedRosterEntry("ws1", STUDENT_UID);
+    await assertSucceeds(getDoc(doc(teacherDb(), "workspaces", "ws1", "students", STUDENT_UID)));
+    await assertFails(getDoc(doc(otherDb(), "workspaces", "ws1", "students", STUDENT_UID)));
+  });
+
+  it("a student can read their own roster entry", async () => {
+    await seedWorkspace("ws1", { ownerId: TEACHER_UID, type: "education", teacherPin: "12345678" });
+    await seedRosterEntry("ws1", STUDENT_UID);
+    await assertSucceeds(getDoc(doc(studentDb(), "workspaces", "ws1", "students", STUDENT_UID)));
+  });
+
+  it("only the teacher can remove (release) a student from the roster", async () => {
+    await seedWorkspace("ws1", { ownerId: TEACHER_UID, type: "education", teacherPin: "12345678" });
+    await seedRosterEntry("ws1", STUDENT_UID);
+    await assertFails(deleteDoc(doc(studentDb(), "workspaces", "ws1", "students", STUDENT_UID)));
+    await assertSucceeds(deleteDoc(doc(teacherDb(), "workspaces", "ws1", "students", STUDENT_UID)));
+  });
+});
+
+describe("teacherPins/{pin}", () => {
+  it("the teacher can create a PIN pointing at their own Education workspace", async () => {
+    await seedWorkspace("ws1", { ownerId: TEACHER_UID, type: "education", teacherPin: "12345678" });
+    await assertSucceeds(
+      setDoc(doc(teacherDb(), "teacherPins", "12345678"), { workspaceId: "ws1", teacherUid: TEACHER_UID })
+    );
+  });
+
+  it("cannot create a PIN pointing at a workspace you don't own", async () => {
+    await seedWorkspace("ws1", { ownerId: TEACHER_UID, type: "education", teacherPin: "12345678" });
+    await assertFails(
+      setDoc(doc(otherDb(), "teacherPins", "12345678"), { workspaceId: "ws1", teacherUid: OTHER_UID })
+    );
+  });
+
+  it("cannot create a PIN pointing at a Business (non-Education) workspace", async () => {
+    await seedWorkspace("ws1", { ownerId: TEACHER_UID, type: "business" });
+    await assertFails(
+      setDoc(doc(teacherDb(), "teacherPins", "12345678"), { workspaceId: "ws1", teacherUid: TEACHER_UID })
+    );
+  });
+
+  it("anyone, even unauthenticated, can read a teacherPin doc to resolve it during signup", async () => {
+    await seedTeacherPin("12345678", "ws1", TEACHER_UID);
+    await assertSucceeds(getDoc(doc(anonDb(), "teacherPins", "12345678")));
+  });
+
+  it("a teacherPin can never be updated or deleted", async () => {
+    await seedTeacherPin("12345678", "ws1", TEACHER_UID);
+    await assertFails(updateDoc(doc(teacherDb(), "teacherPins", "12345678"), { teacherUid: OTHER_UID }));
+    await assertFails(deleteDoc(doc(teacherDb(), "teacherPins", "12345678")));
+  });
+});
+
+describe("opening an Education workspace end-to-end (profile.js sequence)", () => {
+  // Caught by a live smoke test, not this suite originally: get() inside a
+  // security rule cannot see another write still pending in the same
+  // batch/transaction, so creating workspaces/{id} and teacherPins/{pin}
+  // (whose create rule does get(workspaces/{id})) in a single writeBatch
+  // fails. profile.js does two sequential writes instead — this documents
+  // both the failure mode and the correct sequence, so it can't regress
+  // silently the way it did before this test existed.
+  it("creating the workspace and its teacherPin in ONE batch fails", async () => {
+    await seedUser(TEACHER_UID);
+    const db = teacherDb();
+    const batch = writeBatch(db);
+    batch.set(doc(db, "workspaces", "ws1"), {
+      type: "education",
+      ownerId: TEACHER_UID,
+      createdAt: serverTimestamp(),
+      teacherPin: "12345678",
+    });
+    batch.set(doc(db, "teacherPins", "12345678"), {
+      workspaceId: "ws1",
+      teacherUid: TEACHER_UID,
+    });
+    await assertFails(batch.commit());
+  });
+
+  it("creating the workspace first, then the teacherPin + user update, succeeds", async () => {
+    await seedUser(TEACHER_UID);
+    const db = teacherDb();
+    await assertSucceeds(
+      setDoc(doc(db, "workspaces", "ws1"), {
+        type: "education",
+        ownerId: TEACHER_UID,
+        createdAt: serverTimestamp(),
+        teacherPin: "12345678",
+      })
+    );
+
+    const batch = writeBatch(db);
+    batch.set(doc(db, "teacherPins", "12345678"), {
+      workspaceId: "ws1",
+      teacherUid: TEACHER_UID,
+    });
+    batch.update(doc(db, "users", TEACHER_UID), { teacherWorkspaceId: "ws1" });
+    await assertSucceeds(batch.commit());
+  });
+});
+
+describe("projects/{projectId} workspace scoping", () => {
+  it("the owner can create a project inside a workspace they own", async () => {
+    await seedUser(TEACHER_UID);
+    await seedWorkspace("ws1", { ownerId: TEACHER_UID, type: "business" });
+    await assertSucceeds(setDoc(doc(teacherDb(), "projects", "p1"), newProjectData(TEACHER_UID, "ws1")));
+  });
+
+  it("cannot create a project inside a workspace someone else owns", async () => {
+    await seedWorkspace("ws1", { ownerId: TEACHER_UID, type: "business" });
+    await assertFails(setDoc(doc(otherDb(), "projects", "p1"), newProjectData(OTHER_UID, "ws1")));
+  });
+
+  it("workspaceId is immutable after creation", async () => {
+    await seedWorkspace("ws1", { ownerId: OWNER_UID, type: "business" });
+    await seedProject("project1", { workspaceId: OWNER_UID });
+    await assertFails(
+      updateDoc(doc(ownerDb(), "projects", "project1"), { workspaceId: "ws1", updatedAt: serverTimestamp() })
+    );
+  });
+});
+
+describe("teacher read-only access to a linked student's projects", () => {
+  it("the linked teacher can read but not write a student's Personal-workspace project", async () => {
+    await seedLinkedStudent(STUDENT_UID, TEACHER_UID, "ws-teacher");
+    await seedProject("sp1", { ownerId: STUDENT_UID, workspaceId: STUDENT_UID, linkedTeacherUid: TEACHER_UID });
+    await assertSucceeds(getDoc(doc(teacherDb(), "projects", "sp1")));
+    await assertFails(updateDoc(doc(teacherDb(), "projects", "sp1"), { name: "Hacked" }));
+    await assertFails(deleteDoc(doc(teacherDb(), "projects", "sp1")));
+  });
+
+  it("the linked teacher can list every project owned by their student (dashboard.js 'My Students')", async () => {
+    // Regression test for a real live bug: get()-based rules (the old
+    // isTeacherOf() check) work fine for a get() by known ID but silently
+    // fail every `list`/query call, because Firestore can't prove a list
+    // request "safe" when a get() call's path is built from a
+    // per-candidate-document field. linkedTeacherUid replaced that get()
+    // with a plain resource.data comparison specifically so this works.
+    await seedLinkedStudent(STUDENT_UID, TEACHER_UID, "ws-teacher");
+    await seedProject("sp1", { ownerId: STUDENT_UID, workspaceId: STUDENT_UID, linkedTeacherUid: TEACHER_UID });
+    await seedProject("sp2", { ownerId: STUDENT_UID, workspaceId: STUDENT_UID, linkedTeacherUid: TEACHER_UID });
+    // The query's own where() filter must be on the SAME field the rule's
+    // list-granting clause checks (linkedTeacherUid) — Firestore's
+    // list-safety check only "trusts" a rule clause that correlates with
+    // the query's filter field; a clause on an unrelated field (ownerId
+    // alone, without also filtering on it) is silently denied for list
+    // even though the exact same clause works fine for get().
+    const q = query(
+      collection(teacherDb(), "projects"),
+      where("linkedTeacherUid", "==", TEACHER_UID),
+      where("ownerId", "==", STUDENT_UID)
+    );
+    const snap = await assertSucceeds(getDocs(q));
+    if (snap.size !== 2) throw new Error(`expected 2 results, got ${snap.size}`);
+  });
+
+  it("an unrelated user cannot read a student's project just by being a teacher elsewhere", async () => {
+    await seedProject("sp1", { ownerId: STUDENT_UID, workspaceId: STUDENT_UID });
+    await assertFails(getDoc(doc(teacherDb(), "projects", "sp1")));
+  });
+
+  it("the linked teacher can read but not write a student's steps", async () => {
+    await seedLinkedStudent(STUDENT_UID, TEACHER_UID, "ws-teacher");
+    await seedProject("sp1", { ownerId: STUDENT_UID, workspaceId: STUDENT_UID, linkedTeacherUid: TEACHER_UID });
+    await seedStep("sp1", "step1");
+    await assertSucceeds(getDoc(doc(teacherDb(), "projects", "sp1", "steps", "step1")));
+    await assertFails(updateDoc(doc(teacherDb(), "projects", "sp1", "steps", "step1"), { done: true }));
+    await assertFails(setDoc(doc(teacherDb(), "projects", "sp1", "steps", "step2"), newStepData(TEACHER_UID)));
+  });
+});
+
+describe("the teacher-release mechanic (users/{uid} update)", () => {
+  it("the linked teacher can clear a student's studentOf* fields (release)", async () => {
+    await seedLinkedStudent(STUDENT_UID, TEACHER_UID, "ws-teacher");
+    await assertSucceeds(
+      updateDoc(doc(teacherDb(), "users", STUDENT_UID), {
+        studentOfTeacherUid: null,
+        studentOfWorkspaceId: null,
+      })
+    );
+  });
+
+  it("a non-teacher cannot clear another user's studentOf* fields", async () => {
+    await seedLinkedStudent(STUDENT_UID, TEACHER_UID, "ws-teacher");
+    await assertFails(
+      updateDoc(doc(otherDb(), "users", STUDENT_UID), {
+        studentOfTeacherUid: null,
+        studentOfWorkspaceId: null,
+      })
+    );
+  });
+
+  it("the teacher cannot sneak in another field change while releasing", async () => {
+    await seedLinkedStudent(STUDENT_UID, TEACHER_UID, "ws-teacher");
+    await assertFails(
+      updateDoc(doc(teacherDb(), "users", STUDENT_UID), {
+        studentOfTeacherUid: null,
+        studentOfWorkspaceId: null,
+        displayName: "Renamed",
+      })
+    );
+  });
+
+  it("after release (user-doc clear + the project-side cascade), the former teacher can no longer read the student's project", async () => {
+    // linkedTeacherUid on a project is NOT automatically cleared by
+    // releasing the student on their users/{uid} doc alone — release is a
+    // two-part client operation (dashboard.js releaseStudent): clear
+    // studentOf* on the user, AND clear linkedTeacherUid on each of their
+    // projects. This test exercises both, matching the real client flow.
+    await seedLinkedStudent(STUDENT_UID, TEACHER_UID, "ws-teacher");
+    await seedProject("sp1", { ownerId: STUDENT_UID, workspaceId: STUDENT_UID, linkedTeacherUid: TEACHER_UID });
+    await assertSucceeds(getDoc(doc(teacherDb(), "projects", "sp1")));
+
+    await updateDoc(doc(teacherDb(), "users", STUDENT_UID), {
+      studentOfTeacherUid: null,
+      studentOfWorkspaceId: null,
+    });
+    await assertSucceeds(updateDoc(doc(teacherDb(), "projects", "sp1"), { linkedTeacherUid: null }));
+
+    await assertFails(getDoc(doc(teacherDb(), "projects", "sp1")));
+  });
+
+  it("a non-linked user cannot clear someone else's linkedTeacherUid on a project", async () => {
+    await seedLinkedStudent(STUDENT_UID, TEACHER_UID, "ws-teacher");
+    await seedProject("sp1", { ownerId: STUDENT_UID, workspaceId: STUDENT_UID, linkedTeacherUid: TEACHER_UID });
+    await assertFails(updateDoc(doc(otherDb(), "projects", "sp1"), { linkedTeacherUid: null }));
+  });
+
+  it("the linked teacher cannot sneak in another field change while clearing linkedTeacherUid", async () => {
+    await seedLinkedStudent(STUDENT_UID, TEACHER_UID, "ws-teacher");
+    await seedProject("sp1", { ownerId: STUDENT_UID, workspaceId: STUDENT_UID, linkedTeacherUid: TEACHER_UID });
+    await assertFails(
+      updateDoc(doc(teacherDb(), "projects", "sp1"), { linkedTeacherUid: null, name: "Hacked" })
     );
   });
 });

@@ -50,6 +50,7 @@ let currentSteps = [];
 let unsubscribeSteps = null;
 let unsubscribeMembers = null;
 let isOwner = false;
+let isReadOnly = false;
 let currentMemberUids = new Set();
 let currentMembers = [];
 let ownerFriends = [];
@@ -85,12 +86,23 @@ async function loadProject(id) {
     shareSection.hidden = !isOwner;
 
     if (isOwner) {
+      isReadOnly = false;
       watchMembers(id);
       loadOwnerFriends();
+    } else {
+      // Not the owner: could be a redeemed collaborator (full read/write on
+      // steps) or the owner's Education teacher viewing read-only (see
+      // isTeacherOf() in firestore.rules — teachers can read but never
+      // write a student's project). Distinguish by checking our own
+      // membership doc.
+      const memberSnap = await getDoc(doc(db, "projects", id, "members", auth.currentUser.uid));
+      isReadOnly = !memberSnap.exists();
     }
+    stepForm.hidden = isReadOnly;
 
     loadingEl.hidden = true;
     projectEl.hidden = false;
+    renderSteps();
   } catch (err) {
     console.error(err);
     showError("You don't have access to this project.");
@@ -146,6 +158,7 @@ function renderSteps() {
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = step.done;
+    checkbox.disabled = isReadOnly;
     checkbox.addEventListener("change", () => toggleDone(step.id, checkbox.checked));
 
     const titleSpan = document.createElement("span");
@@ -168,36 +181,38 @@ function renderSteps() {
       li.appendChild(detailsEl);
     }
 
-    const actions = document.createElement("div");
-    actions.className = "step-actions";
+    if (!isReadOnly) {
+      const actions = document.createElement("div");
+      actions.className = "step-actions";
 
-    const upBtn = document.createElement("button");
-    upBtn.type = "button";
-    upBtn.className = "btn btn--small";
-    upBtn.textContent = "↑";
-    upBtn.disabled = index === 0;
-    upBtn.addEventListener("click", () => moveStep(index, -1));
+      const upBtn = document.createElement("button");
+      upBtn.type = "button";
+      upBtn.className = "btn btn--small";
+      upBtn.textContent = "↑";
+      upBtn.disabled = index === 0;
+      upBtn.addEventListener("click", () => moveStep(index, -1));
 
-    const downBtn = document.createElement("button");
-    downBtn.type = "button";
-    downBtn.className = "btn btn--small";
-    downBtn.textContent = "↓";
-    downBtn.disabled = index === currentSteps.length - 1;
-    downBtn.addEventListener("click", () => moveStep(index, 1));
+      const downBtn = document.createElement("button");
+      downBtn.type = "button";
+      downBtn.className = "btn btn--small";
+      downBtn.textContent = "↓";
+      downBtn.disabled = index === currentSteps.length - 1;
+      downBtn.addEventListener("click", () => moveStep(index, 1));
 
-    actions.appendChild(upBtn);
-    actions.appendChild(downBtn);
+      actions.appendChild(upBtn);
+      actions.appendChild(downBtn);
 
-    if (isOwner) {
-      const deleteStepBtn = document.createElement("button");
-      deleteStepBtn.type = "button";
-      deleteStepBtn.className = "btn btn--small btn--danger";
-      deleteStepBtn.textContent = "Delete";
-      deleteStepBtn.addEventListener("click", () => deleteStep(step.id, step.title));
-      actions.appendChild(deleteStepBtn);
+      if (isOwner) {
+        const deleteStepBtn = document.createElement("button");
+        deleteStepBtn.type = "button";
+        deleteStepBtn.className = "btn btn--small btn--danger";
+        deleteStepBtn.textContent = "Delete";
+        deleteStepBtn.addEventListener("click", () => deleteStep(step.id, step.title));
+        actions.appendChild(deleteStepBtn);
+      }
+
+      li.appendChild(actions);
     }
-
-    li.appendChild(actions);
 
     stepsListEl.appendChild(li);
   });

@@ -25,6 +25,27 @@
       </section>
 
       <section class="card card--wide">
+        <h2>Workspaces</h2>
+        <p id="student-note" class="field-hint" hidden>
+          You're currently a student in a teacher's class, so Business and Education profiles aren't available until your teacher releases you.
+        </p>
+
+        <div id="business-closed" hidden>
+          <button id="open-business-btn" class="btn btn--secondary">Open Business profile</button>
+        </div>
+        <p id="business-open" class="muted" hidden>Business profile is open &mdash; switch to it from the dashboard, add teammates from your Friends list.</p>
+
+        <div id="education-closed" hidden>
+          <button id="open-education-btn" class="btn btn--secondary">Open Education profile</button>
+        </div>
+        <div id="education-open" hidden>
+          <p class="muted">Education profile is open. Share this PIN with students so they can join as your class during sign up:</p>
+          <p><strong id="teacher-pin-display" class="pin-display"></strong></p>
+        </div>
+        <p id="workspace-error" class="error-text" role="alert"></p>
+      </section>
+
+      <section class="card card--wide">
         <h2>Change username</h2>
         <form id="username-form">
           <label for="new-username">New username</label>

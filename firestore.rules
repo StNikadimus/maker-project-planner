@@ -31,13 +31,35 @@ service cloud.firestore {
       return exists(/databases/$(database)/documents/users/$(ownerUid)/friends/$(otherUid));
     }
 
+    // True if the caller is the Education-workspace teacher that studentUid
+    // is currently linked to (see users/{uid}.studentOfTeacherUid). Used to
+    // grant the teacher READ-ONLY access into a linked student's own
+    // Personal-workspace projects/steps — the student's data never moves,
+    // this is purely a read grant. get() inside a rule is not itself
+    // subject to the target doc's own rules, so this works regardless of
+    // who's asking.
+    function isTeacherOf(studentUid) {
+      return request.auth != null
+        // .get(field, null) rather than .field — an older-shape profile
+        // doc (created before this feature existed) may not have this key
+        // at all, and plain dot access throws instead of treating it as
+        // unset (see the same fix on the users/{userId} update rule below).
+        && get(/databases/$(database)/documents/users/$(studentUid)).data.get('studentOfTeacherUid', null) == request.auth.uid;
+    }
+
+    function isTeacherOfProject(projectId) {
+      return isTeacherOf(get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId);
+    }
+
     // A user may only read or write their own profile document.
     match /users/{userId} {
       allow read: if request.auth != null && request.auth.uid == userId;
 
       allow create: if request.auth != null
         && request.auth.uid == userId
-        && request.resource.data.keys().hasOnly(['displayName', 'username', 'email', 'createdAt', 'photoURL'])
+        && request.resource.data.keys().hasOnly(
+             ['displayName', 'username', 'email', 'createdAt', 'photoURL',
+              'businessWorkspaceId', 'teacherWorkspaceId', 'studentOfTeacherUid', 'studentOfWorkspaceId'])
         && request.resource.data.displayName is string
         && request.resource.data.displayName.size() > 0
         && isValidUsername(request.resource.data.username)
@@ -48,13 +70,36 @@ service cloud.firestore {
       // and photoURL may change (username changes are paired with a
       // usernames/{username} create+delete in the same client-side
       // writeBatch, photoURL changes with a usernames/{username} update —
-      // see CLAUDE.md).
+      // see CLAUDE.md). businessWorkspaceId/teacherWorkspaceId may only be
+      // set once each, from null (a user opens at most one Business and one
+      // Education workspace) — checked by requiring the old value was null
+      // whenever the new value differs from it. studentOfTeacherUid/
+      // studentOfWorkspaceId are set only at signup (see the create rule
+      // and the second allow-update clause below, not here) — self-update
+      // can never touch them.
       allow update: if request.auth != null
-        && request.auth.uid == userId
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'username', 'photoURL'])
-        && request.resource.data.displayName is string
-        && request.resource.data.displayName.size() > 0
-        && isValidUsername(request.resource.data.username);
+        && (
+          (request.auth.uid == userId
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(
+                 ['displayName', 'username', 'photoURL', 'businessWorkspaceId', 'teacherWorkspaceId'])
+            && request.resource.data.displayName is string
+            && request.resource.data.displayName.size() > 0
+            && isValidUsername(request.resource.data.username)
+            // .get(field, null) rather than .field — an older-shape profile
+            // doc (created before this feature existed) may not have these
+            // keys at all, and plain dot access throws on a missing key
+            // instead of treating it as unset.
+            && (resource.data.get('businessWorkspaceId', null) == null || request.resource.data.businessWorkspaceId == resource.data.get('businessWorkspaceId', null))
+            && (resource.data.get('teacherWorkspaceId', null) == null || request.resource.data.teacherWorkspaceId == resource.data.get('teacherWorkspaceId', null)))
+          // The "release a student" mechanic: the teacher currently linked
+          // to this student may clear (only) the two studentOf* fields on
+          // the STUDENT's own doc — the entire release operation, no other
+          // change to the student's data.
+          || (resource.data.get('studentOfTeacherUid', null) == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['studentOfTeacherUid', 'studentOfWorkspaceId'])
+            && request.resource.data.studentOfTeacherUid == null
+            && request.resource.data.studentOfWorkspaceId == null)
+        );
 
       // Self-delete only, used by the "delete profile" flow.
       allow delete: if request.auth != null && request.auth.uid == userId;
@@ -179,35 +224,173 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    match /projects/{projectId} {
-      // Only the owner creates a project.
+    // A Business or Education "profile" is a separate project workspace —
+    // see CLAUDE.md > Security Principles. At most one of each per user,
+    // enforced on users/{uid} (see above), not here. The mandatory
+    // "a linked student can't open their own Business/Education profile"
+    // rule lives in this create check.
+    match /workspaces/{workspaceId} {
+      // get() elsewhere (project creation, roster checks) bypasses this and
+      // always succeeds regardless of who's asking — this only gates a
+      // normal client read/list of the workspace doc itself.
+      allow read: if request.auth != null && request.auth.uid == resource.data.ownerId;
+
       allow create: if request.auth != null
         && request.auth.uid == request.resource.data.ownerId
-        && request.resource.data.keys().hasOnly(['name', 'category', 'ownerId', 'createdAt', 'updatedAt'])
+        && request.resource.data.createdAt == request.time
+        // .get(field, null) rather than .field — an older-shape profile doc
+        // (created before this feature existed, e.g. any account signed up
+        // before 2026-08-06) may not have this key at all, and plain dot
+        // access throws instead of treating it as unset. This exact bug
+        // shipped once already (denied every "Open Business/Education
+        // profile" click for a pre-existing account) — see CLAUDE.md.
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('studentOfTeacherUid', null) == null
+        && (
+          (request.resource.data.type == 'business'
+            && request.resource.data.keys().hasOnly(['type', 'ownerId', 'createdAt']))
+          || (request.resource.data.type == 'education'
+            && request.resource.data.keys().hasOnly(['type', 'ownerId', 'createdAt', 'teacherPin'])
+            && request.resource.data.teacherPin.matches('^[0-9]{8}$'))
+        );
+
+      allow update, delete: if false;
+
+      // The teacher's class roster. Doc ID = the student's own uid.
+      match /students/{uid} {
+        allow read: if request.auth != null
+          && (request.auth.uid == uid
+              || get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid);
+
+        // Self-service: reaching this point already proved the student
+        // knew the teacher's PIN (see teacherPins/{pin} below) — same
+        // bearer-capability shape as invite tokens/usernames elsewhere.
+        allow create: if request.auth != null
+          && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['uid', 'username', 'displayName', 'joinedAt'])
+          && request.resource.data.uid == uid
+          && request.resource.data.joinedAt == request.time;
+
+        allow update: if false;
+
+        // The teacher removing a student — this *is* "release" (paired
+        // client-side with clearing studentOfTeacherUid/
+        // studentOfWorkspaceId on the student's users/{uid} doc).
+        allow delete: if request.auth != null
+          && get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid;
+      }
+    }
+
+    // The doc ID *is* the 8-digit PIN — same "ID as the whole
+    // access-control mechanism" pattern as usernames/invites. Permanent
+    // (no update/delete — matches "always the same" by design) and
+    // publicly readable by exact code (never listable), because a brand
+    // new signup needs to resolve a PIN to a workspaceId before an account
+    // — and therefore an auth token — exists yet. Accepted tradeoff: an
+    // 8-digit numeric code is brute-forceable in principle (no
+    // rate-limiting without a Cloud Function, which would hit the Blaze
+    // wall again), the same security level as any classroom join code.
+    match /teacherPins/{pin} {
+      allow read: if true;
+
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasOnly(['workspaceId', 'teacherUid'])
+        && request.resource.data.teacherUid == request.auth.uid
+        && get(/databases/$(database)/documents/workspaces/$(request.resource.data.workspaceId)).data.ownerId == request.auth.uid
+        && get(/databases/$(database)/documents/workspaces/$(request.resource.data.workspaceId)).data.type == 'education';
+
+      allow update, delete: if false;
+    }
+
+    match /projects/{projectId} {
+      // Only the owner creates a project. workspaceId scopes it to one of
+      // the owner's workspaces (see CLAUDE.md > Security Principles) — for
+      // the Personal workspace it's just the owner's own uid (no
+      // workspaces/{id} doc exists for Personal at all); for
+      // Business/Education it must point at a workspace the owner actually
+      // owns.
+      // linkedTeacherUid is a denormalized copy of the owner's
+      // studentOfTeacherUid *at creation time* — see the read rule below
+      // for why: get()-based checks (isTeacherOf) don't work for `list`
+      // queries whose path depends on resource.data (Firestore can't prove
+      // a list request "safe" when a get() call's path is built from a
+      // per-candidate-document field — confirmed empirically: a single
+      // get() by known project ID works fine, but a teacher's *query* for
+      // "every project owned by this student" doesn't). This field keeps
+      // that check to a plain resource.data comparison, which does work
+      // for list. Kept in sync at release time (see members/{uid}-style
+      // release comment on the update rule below) — until then it stays
+      // fixed at whatever it was when the project was created, matching
+      // studentOfTeacherUid only ever being set once, at signup.
+      allow create: if request.auth != null
+        && request.auth.uid == request.resource.data.ownerId
+        && request.resource.data.keys().hasOnly(['name', 'category', 'ownerId', 'workspaceId', 'linkedTeacherUid', 'createdAt', 'updatedAt'])
         && request.resource.data.name is string
         && request.resource.data.name.size() > 0
         && request.resource.data.category == 'diy'
+        && (request.resource.data.workspaceId == request.auth.uid
+            || get(/databases/$(database)/documents/workspaces/$(request.resource.data.workspaceId)).data.ownerId == request.auth.uid)
+        && request.resource.data.linkedTeacherUid == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('studentOfTeacherUid', null)
         && request.resource.data.createdAt == request.time
         && request.resource.data.updatedAt == request.time;
 
-      // Owner and members (redeemed collaborators) can both read the
-      // project and touch its own mutable fields...
-      allow read: if request.auth != null
+      // Owner, members (redeemed collaborators), and — read-only — the
+      // owner's Education teacher (if any, per linkedTeacherUid) can all
+      // read the project. Only owner/members can update it (except the
+      // one narrow release-time write below).
+      //
+      // Split into `get` vs `list` (rather than one combined `allow read`)
+      // for the same reason `linkedTeacherUid` exists at all: confirmed
+      // empirically, on both the emulator and the live project, that a
+      // `list`/query request fails outright ("Null value error" on the
+      // emulator, a clean permission-denied on prod) when the rule
+      // contains an exists()/get() call whose path is built from
+      // `$(projectId)` — a match-block path wildcard, not literally the
+      // documented `{path=**}` collection-group case in CLAUDE.md, but the
+      // same underlying "list-safety can't be proven" class of gotcha.
+      // `get` (a single doc, fully-known ID) doesn't have this problem —
+      // it keeps the members exists() check. `list` never needs it: the
+      // app never lists `projects` filtered as a *member* (the dashboard's
+      // "Shared with you" section queries the `members` collection group
+      // instead, then does one `get` per project) — only as the owner
+      // (dashboard's own project list, `resource.data.ownerId`) or as a
+      // linked teacher (`resource.data.linkedTeacherUid`), both plain
+      // resource.data comparisons and therefore list-safe.
+      allow get: if request.auth != null
         && (request.auth.uid == resource.data.ownerId
-            || exists(/databases/$(database)/documents/projects/$(projectId)/members/$(request.auth.uid)));
+            || exists(/databases/$(database)/documents/projects/$(projectId)/members/$(request.auth.uid))
+            || resource.data.get('linkedTeacherUid', null) == request.auth.uid);
+
+      allow list: if request.auth != null
+        && (request.auth.uid == resource.data.ownerId
+            || resource.data.get('linkedTeacherUid', null) == request.auth.uid);
 
       allow update: if request.auth != null
-        && (request.auth.uid == resource.data.ownerId
-            || exists(/databases/$(database)/documents/projects/$(projectId)/members/$(request.auth.uid)))
-        && request.resource.data.ownerId == resource.data.ownerId
-        && request.resource.data.category == resource.data.category
-        && request.resource.data.updatedAt == request.time;
+        && (
+          (request.auth.uid == resource.data.ownerId
+              || exists(/databases/$(database)/documents/projects/$(projectId)/members/$(request.auth.uid)))
+            && request.resource.data.ownerId == resource.data.ownerId
+            && request.resource.data.workspaceId == resource.data.workspaceId
+            && request.resource.data.category == resource.data.category
+            && request.resource.data.get('linkedTeacherUid', null) == resource.data.get('linkedTeacherUid', null)
+            && request.resource.data.updatedAt == request.time
+          // The release-time cascade: the teacher currently denormalized
+          // onto this project may clear (only) linkedTeacherUid — nothing
+          // else — same shape as the studentOf* release clause on
+          // users/{userId} above. Without this, an old project would keep
+          // granting the now-released teacher read access forever, since
+          // linkedTeacherUid otherwise never changes after creation.
+          || (resource.data.get('linkedTeacherUid', null) == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['linkedTeacherUid'])
+            && request.resource.data.linkedTeacherUid == null)
+        );
 
       // ...but only the owner can delete it.
       allow delete: if request.auth != null && request.auth.uid == resource.data.ownerId;
 
       match /steps/{stepId} {
-        allow read: if isProjectMember(projectId);
+        // Members can read/write as usual; the owner's teacher (if any)
+        // gets read-only access here too, same as the parent project.
+        allow read: if isProjectMember(projectId) || isTeacherOfProject(projectId);
 
         allow create: if isProjectMember(projectId)
           && request.resource.data.keys().hasOnly(

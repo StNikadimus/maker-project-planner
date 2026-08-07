@@ -13,7 +13,10 @@
     </div>
     <div id="dashboard" class="container container--with-tabs" hidden>
       <header class="dashboard-header">
-        <h1>Welcome, <span id="name"></span></h1>
+        <div>
+          <select id="workspace-select" class="workspace-select"></select>
+          <h1>Welcome, <span id="name"></span></h1>
+        </div>
         <button id="signout" class="btn btn--secondary">Sign out</button>
       </header>
 
@@ -34,6 +37,12 @@
       <section class="card card--wide">
         <h2>Shared with you</h2>
         <ul id="shared-projects-list" class="projects-list"></ul>
+      </section>
+
+      <section class="card card--wide" id="students-section" hidden>
+        <h2>My Students</h2>
+        <ul id="students-list" class="projects-list"></ul>
+        <p id="students-error" class="error-text" role="alert"></p>
       </section>
     </div>
   </main>

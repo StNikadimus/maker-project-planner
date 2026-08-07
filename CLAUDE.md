@@ -69,7 +69,21 @@ code, or by searching a username (which sends a request the other person
 must accept) — see Security Principles for why those two paths have
 different consent models. Friends can block or report each other, and a
 project owner can add a friend directly as a collaborator without an
-invite link.
+invite link. Project owners can also remove a collaborator from the
+Project page at any time.
+
+Every account can additionally open a **Business** and/or an
+**Education** profile from the Profile tab — fully separate project
+workspaces from Personal, switchable via a dropdown at the top of the
+dashboard. Business's "team" is just the existing Friends system, reused
+as-is. Education gives the opener (the teacher) a permanent 8-digit PIN;
+new signups can enter a teacher's PIN to link their account to that
+teacher's class, which lets the teacher see (read-only) that student's
+projects from their dashboard's "My Students" section. A teacher can
+release a student at any time, which only removes them from the roster —
+the student keeps their account and data and regains the ability to open
+their own Business/Education profile. See Security Principles for the
+full design and its tradeoffs.
 
 Platforms: one responsive web app codebase, which also serves as the public
 website, wrapped with Capacitor to produce native iOS and Android apps.
@@ -91,6 +105,10 @@ users/{uid}
   email: string
   createdAt: timestamp
   photoURL: string | null   // always null today — see Security Principles
+  businessWorkspaceId: string | null   // set once, from null, when opened
+  teacherWorkspaceId: string | null    // set once, from null, when opened
+  studentOfTeacherUid: string | null   // linked teacher, set at signup only
+  studentOfWorkspaceId: string | null  // that teacher's workspace id
 
 usernames/{username}        // doc ID *is* the lowercase username
   uid: uid                  // the owning user
@@ -114,10 +132,30 @@ reports/{reportId}          // auto-ID; write-only, no read/processing yet
   reason: string
   createdAt: timestamp
 
+workspaces/{workspaceId}          // auto-ID; Personal has NO doc — it's
+  type: "business" | "education"  // just the owner's own uid, see below
+  ownerId: uid
+  createdAt: timestamp
+  teacherPin: string              // education only, 8 digits
+
+workspaces/{workspaceId}/students/{uid}   // education only, teacher's roster
+  uid: uid
+  username, displayName: denormalized snapshot of the student
+  joinedAt: timestamp
+
+teacherPins/{pin}                 // doc ID *is* the 8-digit PIN itself
+  workspaceId: string
+  teacherUid: uid
+
 projects/{projectId}
   name: string
   category: "diy"
   ownerId: uid
+  workspaceId: string        // own uid for Personal; a workspaces/{id} for
+                              // Business/Education; immutable after create
+  linkedTeacherUid: uid | null  // denormalized copy of the owner's
+                                 // studentOfTeacherUid *at creation time* —
+                                 // see Security Principles for why
   createdAt, updatedAt: timestamp
 
 projects/{projectId}/steps/{stepId}
@@ -198,6 +236,19 @@ a `redeemInvite` Cloud Function. See Security Principles below for why, and
   `signup.js` calls `deleteUser()` on the just-created account immediately
   (the session is seconds old, no reauth needed) and asks the user to
   retry, so signup never leaves an orphaned account.
+- **Remove collaborator (decided 2026-08-06)**: `projects/{id}/members/{uid}`
+  delete, previously `if false` ("permanent for MVP"), is now owner-only
+  (`allow delete: if isProjectOwner(projectId)`), surfaced as a "Remove"
+  button per collaborator on the Project page. A member can't remove
+  themself or anyone else — only the project owner can.
+- **QR code library (fixed 2026-08-06)**: the `qrcode` npm package has no
+  prebuilt classic-`<script>` browser bundle at the path jsDelivr's naive
+  CDN URL implied (`qrcode@1.5.3/build/qrcode.min.js` 404s — that version
+  ships no `build/` directory at all). Fixed by importing it as a real ES
+  module via jsDelivr's `+esm` auto-bundler
+  (`https://cdn.jsdelivr.net/npm/qrcode@1.5.4/+esm`) instead. `jsQR` (the
+  scanning side) genuinely does ship a classic UMD bundle and stays a
+  plain `<script src>` tag — don't "fix" that one the same way.
 - **Delete-profile does not cascade into other people's projects.** It
   deletes each project the user owns (same shallow delete the dashboard's
   existing "Delete" button already does — leaves that project's `steps`/
@@ -245,6 +296,50 @@ a `redeemInvite` Cloud Function. See Security Principles below for why, and
   create rule with a second, mutually exclusive shape: the project owner
   may create the doc directly for anyone in their own
   `users/{ownerUid}/friends` subcollection, no invite involved.
+- **Business/Education workspaces (decided 2026-08-06)**: Business and
+  Education are **fully separate project workspaces**, not a relabeled
+  view of Personal — confirmed explicitly with the user rather than
+  assumed. The smallest change that achieves this: every project gains a
+  required, immutable `workspaceId` (own uid for Personal — no
+  `workspaces/{id}` doc needed at all for the common case — or a real
+  `workspaces/{id}` for Business/Education), and the dashboard's project
+  query adds `where('workspaceId','==',activeWorkspaceId)` on top of the
+  existing `ownerId` filter. `activeWorkspaceId` is a client-only
+  preference (localStorage, keyed per-uid), not synced through Firestore —
+  simplest option, defaults back to Personal if unset or no longer valid.
+  A user can open at most one Business and one Education workspace each,
+  enforced by `users/{uid}.businessWorkspaceId`/`teacherWorkspaceId` only
+  being settable once, from null. Business's "team" is the **existing
+  Friends system**, unmodified — no new roster type, "adding a teammate"
+  is just direct-add-to-project reused on a Business-workspace project.
+  Education's teacher PIN is a **permanent, numeric, 8-digit** join code
+  (`teacherPins/{pin}`, doc ID = the PIN) — deliberately digits, not
+  arbitrary characters, matching familiar classroom-code UX
+  (Kahoot/Google Classroom style), and using the exact same "ID as the
+  whole access-control mechanism" pattern as invite tokens/usernames: no
+  `list`, public `get` only (needed pre-auth, during signup), no
+  rate-limiting since that would need a Cloud Function (the Blaze wall
+  again) — an accepted tradeoff at the same security level as any
+  classroom join code. A linked student's own project data **never
+  moves** — the teacher's "see student tasks" ability
+  (`isTeacherOf()`/`isTeacherOfProject()` in `firestore.rules`) is a pure
+  **read grant** into the student's Personal-workspace projects/steps,
+  checked against `studentOfTeacherUid` on the student's own doc; the
+  teacher can never write. This is exactly why **release** — mandatory
+  per the user, so a student keeps using the app after class ends — is
+  safe and non-destructive: it's nothing more than the teacher clearing
+  `studentOfTeacherUid`/`studentOfWorkspaceId` (both together, no other
+  field) on the student's own `users/{uid}` doc, paired client-side with
+  deleting the `workspaces/{teacherWorkspaceId}/students/{uid}` roster
+  entry. The other mandatory rule — a linked student can't open their own
+  Business/Education profile — is enforced directly in the
+  `workspaces/{workspaceId}` create rule (`get()`-checks the caller's own
+  `studentOfTeacherUid` is null), not just hidden client-side, though
+  `profile.js` also hides the buttons for UX. `project.js` renders
+  **read-only** (no step form, no checkbox/reorder/delete actions) when
+  the viewer is neither the project's owner nor a `members/{uid}` —
+  distinguishing that from "has read access via being the teacher"
+  requires one extra `getDoc` on the viewer's own membership doc.
 - **Profile pictures were built, then deliberately dropped, 2026-08-06.**
   A working version existed (Cloud Storage upload, `storage.rules`,
   `profile.js` upload UI) but Storage had never been enabled on this
@@ -281,6 +376,49 @@ a `redeemInvite` Cloud Function. See Security Principles below for why, and
   with the query's own `where()` filter (not a path wildcard) — path
   wildcards aren't resolved yet when Firestore checks whether a `list` is
   safe, and using one throws a `Null value error`.
+- **Three more `list`-specific Firestore rules gotchas, found 2026-08-07
+  via a live bug report** ("teacher can't see student's projects" — the
+  emulator suite didn't catch any of these; a live smoke test with a
+  proper `getDocs(query(...))`, not just `getDoc()`, did): (1) `get()`/
+  `exists()` calls whose **path is built from a `resource.data` value**
+  (e.g. `isTeacherOf(resource.data.ownerId)`, a `get(users/{...})` where
+  `{...}` comes from the document currently being evaluated) silently
+  fail for `list` — works fine for `get()` by known ID, and on the
+  emulator throws the exact same `Null value error` as the wildcard case
+  above, but on live prod it's just a clean `permission-denied`, not a
+  crash — same practical lesson either way: *don't build a `get()` path
+  from `resource.data` inside anything that might ever be `list`ed.* The
+  fix here was denormalization: `projects/{id}` gained a `linkedTeacherUid`
+  field (a plain copy of the owner's `studentOfTeacherUid` *at creation
+  time*, since the field is only ever set at signup), so the rule became a
+  pure `resource.data.linkedTeacherUid == request.auth.uid` comparison —
+  no `get()` at all. (2) A **path-wildcard** `get()`/`exists()` call
+  (`exists(projects/$(projectId)/members/$(request.auth.uid))`, using the
+  match block's own `{projectId}`) *also* breaks `list` the same way,
+  even outside the collection-group case the first bullet above already
+  covered — confirmed on both emulator and live. Since `get`/`list` are
+  separate sub-operations of `read`, and can have **separate rule bodies**
+  (`allow get: if ...` / `allow list: if ...` instead of one combined
+  `allow read: if ...`), the fix was splitting them: `get` keeps the full
+  owner/member/teacher check (fine for a single known-ID fetch — this is
+  how `project.html` opens a specific project), `list` drops the
+  problematic `exists()` clause entirely (the app never actually lists
+  `projects` filtered *as a member* — the "Shared with you" dashboard
+  section queries the `members` collection group instead, then does one
+  `get` per project). (3) Even a `list`-safe `resource.data` comparison
+  clause is silently ignored unless the **query's own `where()` filter is
+  on that same field** — `resource.data.linkedTeacherUid ==
+  request.auth.uid` only actually grants a `list` when the query itself
+  includes `where('linkedTeacherUid', '==', teacherUid)`; the *exact same
+  rule clause*, with a query filtered only by `where('ownerId', '==',
+  studentUid)` instead, is denied. `dashboard.js`'s "My Students → View
+  projects" query now filters on both fields for this reason. **General
+  lesson for next time a `list`/query needs a new access grant**: write a
+  rules-suite test using `getDocs(query(...))` (matching the client's
+  *actual* query shape, filters included) — never validate a new `list`
+  path with only `getDoc()`/`assertSucceeds(getDoc(...))`, which cannot
+  catch any of these three failure modes; all three only manifest on
+  `list`.
 
 ## Project structure
 
@@ -351,10 +489,36 @@ The real Firebase project (`maker-project-planner`) already exists and
 `public/js/firebaseConfig.js` / `.firebaserc` already point at it — nothing
 to fill in.
 
-`firebase login` does **not** work from Claude Code's Bash tool (no
-interactive browser/TTY) — it fails outright, and even piping it through
-`!<command>` into the user's own terminal hits the same problem. The
-working non-interactive path:
+**Primary method (decided 2026-08-07): a service account key.** The user
+doesn't have a password manager set up in this dev VM, so re-authenticating
+interactively for a fresh `login:ci` token every session was enough friction
+to be worth a one-time fix. The key lives at
+`/home/nik/.secrets/maker-project-planner-firebase-adminsdk-fbsvc-109488d550.json`
+on this machine — **outside the repo entirely**, never read its contents
+into a commit or into chat, only ever reference it by path via the env var
+below. It's the default Firebase Admin SDK service account
+(`firebase-adminsdk-fbsvc@maker-project-planner.iam.gserviceaccount.com`);
+that account's default IAM roles cover Firestore data access but not
+deploy operations, so the user manually added the **Editor** role to it in
+Google Cloud Console (IAM & Admin > IAM) before this worked — a 403 on
+`firebaserules.googleapis.com` the first time was exactly that missing
+role, and the fix took a few minutes to propagate. Deploys:
+```
+GOOGLE_APPLICATION_CREDENTIALS="/home/nik/.secrets/maker-project-planner-firebase-adminsdk-fbsvc-109488d550.json" npx firebase-tools deploy --only hosting,firestore --project maker-project-planner
+```
+(`--only` can be `hosting`, `firestore` (rules+indexes), `firestore:rules`,
+or `functions` as needed — functions deploy will fail until the project
+is on Blaze, see the invite-redemption note above. No `storage` target —
+Cloud Storage was deliberately never enabled on this project, see
+Security Principles.) This key doesn't expire the way a `login:ci` token
+does — no need to ask the user for anything before a future deploy from
+this same machine, unless the key is later revoked.
+
+**Fallback: `login:ci` token**, still useful on a different machine or if
+the service account key is ever unavailable. `firebase login` does **not**
+work from Claude Code's Bash tool (no interactive browser/TTY) — it fails
+outright, and even piping it through `!<command>` into the user's own
+terminal hits the same problem.
 
 1. Ask the user to run `npx firebase-tools login:ci` themselves in their
    own real terminal (not through the agent) — it opens a browser, then
@@ -367,18 +531,6 @@ working non-interactive path:
    ```
    FIREBASE_TOKEN="<pasted token>" npx firebase-tools deploy --only hosting,firestore --token "$FIREBASE_TOKEN"
    ```
-   (`--only` can be `hosting`, `firestore` (rules+indexes), `firestore:rules`,
-   or `functions` as needed — functions deploy will fail until the project
-   is on Blaze, see the invite-redemption note above. No `storage` target —
-   Cloud Storage was deliberately never enabled on this project, see
-   Security Principles.)
-
-`login:ci` is deprecated but functional; firebase-tools itself suggests a
-service account + `GOOGLE_APPLICATION_CREDENTIALS` as the modern
-replacement — worth switching to if deploys become frequent enough that
-regenerating a CI token each session gets old (a service account key is a
-real secret though: never commit it, keep it out of the repo entirely,
-`.gitignore` already covers `*serviceAccountKey*.json`).
 
 ## Git workflow
 
@@ -496,6 +648,99 @@ successful build. Status as of 2026-08-05:
   clock) with zero tolerance for the same 7-day span, so any clock skew or
   network latency flipped the comparison — fixed by giving the rule a
   10-minute buffer.
+- **2026-08-06, remove-collaborator + QR fix**: pushed to GitHub and
+  installed on the test phone at the user's explicit request (`git push`
+  done; the user took over on-device verification personally from there —
+  no confirmed-working report back yet as of this writing).
+- **2026-08-06/07, Business/Education workspaces feature**: implemented in
+  full per the design above — `firestore.rules` (workspaces, teacherPins,
+  the students roster, the projects/steps/users updates), `signup.js`/
+  `signup.html` (student PIN field), `profile.js`/`profile.html` (Open
+  Business/Education profile actions), `dashboard.js`/`dashboard.html`
+  (workspace switcher — hidden entirely when only Personal is open, since
+  there's nothing to switch between — scoped project queries, "My
+  Students" section with release + read-only project drill-in), and
+  `project.js` (read-only mode for a teacher viewing a student's project).
+  Deployed to the live project and **confirmed working end-to-end**, both
+  via a scripted live smoke test (throwaway accounts through the
+  Identity Toolkit + Firestore REST APIs: teacher opens Education, gets a
+  PIN, a student signs up with it, is blocked from opening their own
+  Business/Education, teacher gets read-only access to the student's
+  project, release revokes that access and unblocks the student) and by
+  the user manually on the real phone.
+  Three real bugs were found and fixed along the way — worth reading
+  before touching this feature again, since two of them share one root
+  cause that's easy to reintroduce:
+  1. (Caught by the rules test suite) The `users/{userId}` self-update
+     rule's null-check on `businessWorkspaceId`/`teacherWorkspaceId` used
+     plain dot-field access, which throws (denying the whole update, even
+     for unrelated fields like changing your username) against an
+     older-shape profile doc that predates this feature and never had
+     those keys — fixed with `resource.data.get('field', null)` instead
+     of `resource.data.field`.
+  2. (Caught by a live smoke test against the real project, not the
+     emulator suite) `profile.js`'s "Open Education profile" handler
+     created `workspaces/{id}` and `teacherPins/{pin}` in a **single**
+     `writeBatch` — but the `teacherPins` create rule does
+     `get(workspaces/{id})` to check the workspace's owner/type, and a
+     `get()` inside a security rule cannot see another write still
+     pending in the *same* batch/transaction. Fixed by splitting it into
+     two sequential writes (create the workspace, `await` it, *then*
+     batch the PIN + user update) — a regression test now covers both the
+     single-batch failure and the correct two-step sequence, in the
+     `firestore-tests/rules.test.js` describe block named exactly for
+     this. **The same same-batch-visibility gotcha will bite any future
+     write that both creates a document and, in one batch, creates/updates
+     another document whose rule does `get()` on the first — check for
+     this before batching.**
+  3. (Caught by the user on-device, on their own real, pre-existing
+     "gozd" account — *not* one of the smoke test's synthetic accounts,
+     which is exactly why it slipped through) The exact same "older-shape
+     doc predates this feature" bug as #1, but in the `workspaces/{id}`
+     create rule this time — `get(users/uid).data.studentOfTeacherUid ==
+     null` threw for any account created before 2026-08-06, denying every
+     "Open Business/Education profile" click for every pre-existing
+     account (which, on a live project, is most of them). Same fix
+     (`.get('studentOfTeacherUid', null)`), also applied to the two other
+     places `firestore.rules` read that same field the same unsafe way
+     (`isTeacherOf()`, and the release clause on the `users/{userId}`
+     update rule) even though only the workspace-create one had a
+     confirmed live report — a new regression test seeds an
+     intentionally-old-shape profile doc (only the fields `signup.js`
+     wrote before this feature existed) to catch this specific shape of
+     bug going forward, since `seedUser()` always writes the full modern
+     field set and would never have caught it. **Lesson for next time**:
+     any rule field added to an existing collection needs a test seeded
+     with the *pre-change* document shape, not just the current one —
+     `seedUser()`/`newProjectData()`/etc. only ever exercise "this field
+     was always there."
+- **2026-08-07, three bugs found by the user on-device, all fixed**:
+  (1) The exact `studentOfTeacherUid`-plain-dot-access bug described
+  above, but in the `workspaces/{id}` create rule this time — denied
+  every "Open Business/Education profile" click for every real,
+  pre-existing account (i.e. most real accounts on a live project).
+  (2) "Teacher can't see student's projects" (`dashboard.js`'s "My
+  Students → View projects" threw "Couldn't load that student's
+  projects") — the real root cause, and the fix (`linkedTeacherUid`
+  denormalization, splitting `projects/{id}`'s `allow read` into
+  separate `allow get`/`allow list`, and the "query filter must match the
+  rule's granting field" gotcha), is written up in full under Security
+  Principles above and in `SECURITY.md` — worth reading before touching
+  teacher/student project access again. Confirmed fixed live via REST
+  (`getDocs`-shaped query, matching `dashboard.js` exactly) both before
+  and after a release-cascade update, then redeployed
+  (`firestore.rules` + `hosting`) and reinstalled on the test phone.
+  (3) Reported but **not yet root-caused**: QR-code friend-add and
+  sending a friend request both failed on-device. The friends/
+  friendRequests rules are untouched this session and the emulator suite
+  (102 tests, includes those rules) is green, so this is unlikely to be
+  a rules regression — more likely either a pre-existing bug never
+  caught before (the Friends feature's on-device verification was
+  interrupted by the WebView-degradation issue in an earlier session and
+  never completed a clean pass) or a recurrence of that same WebView
+  state issue. The user is restarting the phone and retesting, per the
+  same recovery step that worked last time — pick this up from their
+  findings rather than assuming either cause.
 - **Phase 7 — AI step-time estimation**: not started. Needs a Cloud
   Function to call the Claude API without exposing the key client-side —
   will hit the same Blaze-plan wall as Phase 5 did. Raise that tradeoff

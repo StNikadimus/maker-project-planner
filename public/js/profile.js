@@ -10,17 +10,20 @@ import {
 import {
   doc,
   getDoc,
+  setDoc,
   deleteDoc,
   writeBatch,
   collection,
   query,
   where,
   getDocs,
+  serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 import { auth, db } from "./firebase-init.js";
 import { formatAuthError } from "./auth-errors.js";
 
 const USERNAME_PATTERN = /^[a-z][a-z0-9_]{2,19}$/;
+const MAX_PIN_ATTEMPTS = 5;
 
 const loadingEl = document.getElementById("loading");
 const profileEl = document.getElementById("profile");
@@ -45,6 +48,16 @@ const resetErrorEl = document.getElementById("reset-error");
 const deleteBtn = document.getElementById("delete-profile");
 const deleteErrorEl = document.getElementById("delete-error");
 
+const studentNoteEl = document.getElementById("student-note");
+const businessClosedEl = document.getElementById("business-closed");
+const businessOpenEl = document.getElementById("business-open");
+const openBusinessBtn = document.getElementById("open-business-btn");
+const educationClosedEl = document.getElementById("education-closed");
+const educationOpenEl = document.getElementById("education-open");
+const openEducationBtn = document.getElementById("open-education-btn");
+const teacherPinDisplayEl = document.getElementById("teacher-pin-display");
+const workspaceErrorEl = document.getElementById("workspace-error");
+
 let userData = null;
 
 onAuthStateChanged(auth, async (user) => {
@@ -57,6 +70,7 @@ onAuthStateChanged(auth, async (user) => {
     const snap = await getDoc(doc(db, "users", user.uid));
     userData = snap.exists() ? snap.data() : { displayName: user.email, username: "", email: user.email };
     renderAccount();
+    await renderWorkspaces();
     loadingEl.hidden = true;
     profileEl.hidden = false;
   } catch (err) {
@@ -71,6 +85,111 @@ function renderAccount() {
   currentDisplayNameEl.textContent = userData.displayName;
   currentEmailEl.textContent = userData.email;
 }
+
+async function renderWorkspaces() {
+  const isStudent = !!userData.studentOfTeacherUid;
+  studentNoteEl.hidden = !isStudent;
+
+  const hasBusiness = !!userData.businessWorkspaceId;
+  businessClosedEl.hidden = hasBusiness || isStudent;
+  businessOpenEl.hidden = !hasBusiness;
+
+  const hasEducation = !!userData.teacherWorkspaceId;
+  educationClosedEl.hidden = hasEducation || isStudent;
+  educationOpenEl.hidden = !hasEducation;
+  if (hasEducation) {
+    try {
+      const workspaceSnap = await getDoc(doc(db, "workspaces", userData.teacherWorkspaceId));
+      teacherPinDisplayEl.textContent = workspaceSnap.exists() ? workspaceSnap.data().teacherPin : "";
+    } catch (err) {
+      console.error(err);
+      teacherPinDisplayEl.textContent = "";
+    }
+  }
+}
+
+function randomPin() {
+  return String(Math.floor(Math.random() * 100000000)).padStart(8, "0");
+}
+
+openBusinessBtn.addEventListener("click", async () => {
+  workspaceErrorEl.textContent = "";
+  openBusinessBtn.classList.add("is-loading");
+  try {
+    const user = auth.currentUser;
+    const workspaceRef = doc(collection(db, "workspaces"));
+    const batch = writeBatch(db);
+    batch.set(workspaceRef, {
+      type: "business",
+      ownerId: user.uid,
+      createdAt: serverTimestamp(),
+    });
+    batch.update(doc(db, "users", user.uid), { businessWorkspaceId: workspaceRef.id });
+    await batch.commit();
+
+    userData.businessWorkspaceId = workspaceRef.id;
+    await renderWorkspaces();
+  } catch (err) {
+    console.error(err);
+    workspaceErrorEl.textContent = "Couldn't open Business profile.";
+  } finally {
+    openBusinessBtn.classList.remove("is-loading");
+  }
+});
+
+openEducationBtn.addEventListener("click", async () => {
+  workspaceErrorEl.textContent = "";
+  openEducationBtn.classList.add("is-loading");
+  try {
+    const user = auth.currentUser;
+    let lastErr = null;
+    for (let attempt = 0; attempt < MAX_PIN_ATTEMPTS; attempt++) {
+      const pin = randomPin();
+      const workspaceRef = doc(collection(db, "workspaces"));
+      try {
+        // Two sequential writes, not one batch: the teacherPins/{pin}
+        // create rule below looks this workspace up with get(), and a
+        // get() inside a rule can't see another write still pending in
+        // the same batch/transaction — the workspace has to actually
+        // exist first.
+        await setDoc(workspaceRef, {
+          type: "education",
+          ownerId: user.uid,
+          createdAt: serverTimestamp(),
+          teacherPin: pin,
+        });
+
+        const batch = writeBatch(db);
+        batch.set(doc(db, "teacherPins", pin), {
+          workspaceId: workspaceRef.id,
+          teacherUid: user.uid,
+        });
+        batch.update(doc(db, "users", user.uid), { teacherWorkspaceId: workspaceRef.id });
+        await batch.commit();
+
+        userData.teacherWorkspaceId = workspaceRef.id;
+        await renderWorkspaces();
+        return;
+      } catch (err) {
+        // Most likely the PIN was already taken (create-once-wins on
+        // teacherPins/{pin}) — retry with a freshly generated PIN and a
+        // fresh workspace doc. workspaces/{id} can never be deleted (see
+        // firestore.rules — permanent by design), so the abandoned
+        // workspace from this failed attempt is orphaned rather than
+        // cleaned up; harmless since it's never referenced from anywhere
+        // and a same-batch collision is astronomically rare (1 in 10^8
+        // per attempt).
+        lastErr = err;
+      }
+    }
+    throw lastErr;
+  } catch (err) {
+    console.error(err);
+    workspaceErrorEl.textContent = "Couldn't open Education profile.";
+  } finally {
+    openEducationBtn.classList.remove("is-loading");
+  }
+});
 
 signOutBtn.addEventListener("click", async () => {
   await signOut(auth);
